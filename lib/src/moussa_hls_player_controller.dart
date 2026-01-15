@@ -63,7 +63,7 @@ class MoussaHlsPlayerController {
         if (_disposed) return;
         if (event is! Map) return;
 
-        final e = Map<String, dynamic>.from(event as Map);
+        final e = Map<String, dynamic>.from(event);
         _eventsCtrl.add(e);
 
         final type = (e['type'] ?? '').toString();
