@@ -1,4 +1,4 @@
-## [0.1.0] - 2026-01-14
+## [0.1.0]
 
 ### Added
 - Native HLS video player for Flutter (Android & iOS).
@@ -31,3 +31,40 @@
 - This release focuses on stability and production-ready native playback.
 
 ---
+
+## [0.1.1]
+### Added:
+
+- EventChannel support per viewId for native player events.
+- Native error reporting from Android (ExoPlayer) and iOS (AVPlayer) to Flutter.
+- MoussaPlayerError model (code, platform, message, details).
+- Error overlay UI inside MoussaHlsPlayerView with optional enable/disable.
+- Retry and Dismiss actions for player errors.
+- clearError() method in MoussaHlsPlayerController.
+
+### Android:
+
+- Added ExoPlayer Player.Listener to capture playback, network, decoding, and manifest errors.
+- Mapped ExoPlayer PlaybackException error codes to stable plugin-level error codes.
+- Errors are emitted through EventChannel without crashing the app.
+
+### iOS:
+
+- Added FlutterEventChannel integration per PlatformView.
+- Added AVPlayerItem observers for playback failures.
+- Handles AVPlayerItem.status == failed and AVPlayerItemFailedToPlayToEndTime.
+- Mapped common AVFoundation errors (network, decode, file not found) to readable error codes.
+- Improved observer and resource cleanup on dispose.
+
+### Improved:
+
+- Better lifecycle management for native views and channels.
+- Clear separation between MethodChannel (commands) and EventChannel (events).
+- Prevent silent black screen by surfacing native playback errors.
+- Safer cleanup of native resources on dispose.
+
+### Notes:
+
+- No breaking API changes.
+- Fully backward compatible with version 0.1.0.
+- Recommended update for production usage.

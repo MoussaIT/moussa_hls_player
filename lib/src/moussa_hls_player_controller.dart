@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 
 import '../moussa_hls_player_method_channel.dart';
 import 'moussa_hls_player_types.dart';
+import 'moussa_player_error.dart';
 
 class MoussaHlsPlayerController {
   MoussaHlsPlayerController._(this._viewId);
@@ -13,6 +14,13 @@ class MoussaHlsPlayerController {
   late final MethodChannel _channel = MethodChannel(
     MoussaHlsChannel.forView(_viewId),
   );
+
+  // ✅ EventChannel per viewId
+  late final EventChannel _eventChannel = EventChannel(
+    MoussaHlsChannel.eventsForView(_viewId),
+  );
+
+  StreamSubscription? _eventSub;
 
   bool _disposed = false;
 
@@ -32,9 +40,39 @@ class MoussaHlsPlayerController {
     ),
   );
 
+  final ValueNotifier<MoussaPlayerError?> error = ValueNotifier(null);
+
   static MoussaHlsPlayerController fromViewId(int viewId) {
     return MoussaHlsPlayerController._(viewId);
   }
+
+  /// ✅ attach once after platform view created
+  void attachToView() {
+    if (_disposed || !_isSupportedPlatform) return;
+
+    _eventSub?.cancel();
+    _eventSub = _eventChannel.receiveBroadcastStream().listen(
+      (event) {
+        // event expected: {type:'error', code:int, platform:'ios|android', message:'..', details:{...}}
+        if (event is Map) {
+          final type = (event['type'] ?? '').toString();
+          if (type == 'error') {
+            error.value = MoussaPlayerError.fromMap(event);
+          }
+        }
+      },
+      onError: (e) {
+        error.value = MoussaPlayerError(
+          code: -2,
+          platform: 'flutter',
+          message: 'EventChannel error: $e',
+          details: const {},
+        );
+      },
+    );
+  }
+
+  void clearError() => error.value = null;
 
   Future<T?> _safeInvoke<T>(String method, [dynamic args]) async {
     if (_disposed) return null;
@@ -44,7 +82,6 @@ class MoussaHlsPlayerController {
       final res = await _channel.invokeMethod<T>(method, args);
       return res;
     } catch (_) {
-      // swallow any platform/channel errors to avoid crashes on unsupported platforms
       return null;
     }
   }
@@ -106,7 +143,6 @@ class MoussaHlsPlayerController {
   Future<void> refreshState() async {
     if (_disposed || !_isSupportedPlatform) return;
 
-    // لو أي نداء فشل، هنكمل بقيم افتراضية من غير كراش
     final results = await Future.wait([
       getIsPlaying(),
       getPositionMs(),
@@ -130,12 +166,18 @@ class MoussaHlsPlayerController {
     if (_disposed) return;
     _disposed = true;
 
-    // حاول تنضف النيتف لو مدعوم
+    // stop listening events
+    await _eventSub?.cancel();
+    _eventSub = null;
+
     await _safeInvoke<void>('dispose');
 
-    // ValueNotifier dispose
     try {
       state.dispose();
+    } catch (_) {}
+
+    try {
+      error.dispose();
     } catch (_) {}
   }
 }
