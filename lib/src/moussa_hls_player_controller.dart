@@ -15,7 +15,6 @@ class MoussaHlsPlayerController {
     MoussaHlsChannel.forView(_viewId),
   );
 
-  // ✅ EventChannel per viewId
   late final EventChannel _eventChannel = EventChannel(
     MoussaHlsChannel.eventsForView(_viewId),
   );
@@ -43,17 +42,22 @@ class MoussaHlsPlayerController {
 
   final ValueNotifier<MoussaPlayerError?> error = ValueNotifier(null);
 
-  // optional: expose raw events (useful for UI later)
   final StreamController<Map<String, dynamic>> _eventsCtrl =
       StreamController.broadcast();
-
   Stream<Map<String, dynamic>> get events => _eventsCtrl.stream;
+
+  // Keep qualities for UI
+  List<MoussaHlsQuality> _qualities = const [];
+  List<MoussaHlsQuality> get qualities => _qualities;
+
+  // mute helpers
+  double _lastNonZeroVolume = 1.0;
+  bool get isMuted => state.value.volume <= 0.0001;
 
   static MoussaHlsPlayerController fromViewId(int viewId) {
     return MoussaHlsPlayerController._(viewId);
   }
 
-  /// ✅ attach once after platform view created
   void attachToView() {
     if (_disposed || !_isSupportedPlatform) return;
 
@@ -68,14 +72,11 @@ class MoussaHlsPlayerController {
 
         final type = (e['type'] ?? '').toString();
 
-        // ✅ Errors
         if (type == 'error') {
           error.value = MoussaPlayerError.fromMap(e);
-          _applyStatePatch(isPlaying: false, isBuffering: false);
           return;
         }
 
-        // ✅ Update state from native events
         _handleStateEvent(type, e);
       },
       onError: (e) {
@@ -90,68 +91,31 @@ class MoussaHlsPlayerController {
   }
 
   void _handleStateEvent(String type, Map<String, dynamic> e) {
-    // We always read common fields if present
-    int? pos = e.containsKey('positionMs') ? _toInt(e['positionMs']) : null;
-    int? dur = e.containsKey('durationMs') ? _toInt(e['durationMs']) : null;
-    int? bufferedTo =
-        e.containsKey('bufferedToMs') ? _toInt(e['bufferedToMs']) : null;
+    final s = state.value;
 
-    double? vol = e.containsKey('volume') ? _toDouble(e['volume']) : null;
-
-    // ✅ unified: quality label should come as "label"
-    String? label;
-    if (e.containsKey('label')) {
-      final v = e['label'];
-      label = v == null ? null : v.toString();
-    }
-
-    // backward-compat (لو لسه في أي مكان قديم)
-    if (label == null && e.containsKey('quality')) {
-      final v = e['quality'];
-      label = v == null ? null : v.toString();
-    }
-    if (label == null && e.containsKey('currentQuality')) {
-      final v = e['currentQuality'];
-      label = v == null ? null : v.toString();
-    }
-
+    int? pos;
+    int? dur;
+    int? buf;
+    double? vol;
+    String? quality;
     bool? isPlaying;
     bool? isBuffering;
 
+    if (e.containsKey('positionMs')) pos = _toInt(e['positionMs']);
+    if (e.containsKey('durationMs')) dur = _toInt(e['durationMs']);
+    if (e.containsKey('bufferedToMs')) buf = _toInt(e['bufferedToMs']);
+
+    if (e.containsKey('volume')) vol = _toDouble(e['volume']);
+
+    // We accept both "quality" & "label" & "currentQuality"
+    if (e.containsKey('quality')) quality = (e['quality'] ?? '').toString();
+    if (e.containsKey('currentQuality')) quality = (e['currentQuality'] ?? '').toString();
+    if (e.containsKey('label')) quality = (e['label'] ?? '').toString();
+
     switch (type) {
-      case 'stream_ready':
-        // no state change required
-        break;
-
       case 'snapshot':
-        // snapshot: {positionMs,durationMs,isPlaying,label,volume, bufferedToMs?}
         isPlaying = _toBool(e['isPlaying']);
-        break;
-
-      case 'source_set':
-        // source_set: {url,label,autoPlay}
-        break;
-
-      case 'buffering':
-        // buffering: {reason}
-        isBuffering = true;
-        break;
-
-      case 'buffer_update':
-        // buffer_update: {bufferedToMs}
-        break;
-
-      case 'ready':
-        // ready: {durationMs}
-        isBuffering = false;
-        break;
-
-      case 'duration':
-        // durationMs comes
-        break;
-
-      case 'position':
-        // positionMs comes
+        // snapshot may include bufferedToMs on android; ok
         break;
 
       case 'playing':
@@ -161,20 +125,19 @@ class MoussaHlsPlayerController {
 
       case 'paused':
         isPlaying = false;
+        break;
+
+      case 'buffering':
+        isBuffering = true;
+        break;
+
+      case 'ready':
+        // often means buffering ended
         isBuffering = false;
         break;
 
-      case 'seeked':
-        pos = _toInt(e['positionMs']) ?? pos;
-        break;
-
-      case 'quality_changed':
-        // quality_changed: {label, positionMs}
-        label = (e['label'] ?? label)?.toString();
-        break;
-
-      case 'volume_changed':
-        // volume comes
+      case 'buffer_update':
+        // keep best-effort: doesn't mean buffering true/false
         break;
 
       case 'ended':
@@ -182,45 +145,32 @@ class MoussaHlsPlayerController {
         isBuffering = false;
         break;
 
+      case 'quality_changed':
+        // ensure reflect label
+        quality = (e['label'] ?? quality)?.toString();
+        break;
+
       default:
-        // ignore unknown types
         break;
     }
 
-    _applyStatePatch(
-      isPlaying: isPlaying,
-      isBuffering: isBuffering,
-      positionMs: pos,
-      durationMs: dur,
-      bufferedToMs: bufferedTo,
-      volume: vol,
-      currentQuality: label,
-    );
-  }
-
-  void _applyStatePatch({
-    bool? isPlaying,
-    bool? isBuffering,
-    int? positionMs,
-    int? durationMs,
-    int? bufferedToMs,
-    double? volume,
-    String? currentQuality,
-  }) {
-    if (_disposed) return;
-
-    final s = state.value;
     final next = s.copyWith(
       isPlaying: isPlaying ?? s.isPlaying,
       isBuffering: isBuffering ?? s.isBuffering,
-      positionMs: positionMs ?? s.positionMs,
-      durationMs: durationMs ?? s.durationMs,
-      bufferedToMs: bufferedToMs ?? s.bufferedToMs,
-      volume: volume ?? s.volume,
-      currentQuality: currentQuality ?? s.currentQuality,
+      positionMs: pos ?? s.positionMs,
+      durationMs: dur ?? s.durationMs,
+      bufferedToMs: buf ?? s.bufferedToMs,
+      volume: vol ?? s.volume,
+      currentQuality: (quality != null && quality.trim().isEmpty)
+          ? s.currentQuality
+          : (quality ?? s.currentQuality),
     );
 
-    state.value = next;
+    if (!_disposed) {
+      // track last non-zero vol
+      if (next.volume > 0.0001) _lastNonZeroVolume = next.volume;
+      state.value = next;
+    }
   }
 
   int? _toInt(dynamic v) {
@@ -251,10 +201,8 @@ class MoussaHlsPlayerController {
   Future<T?> _safeInvoke<T>(String method, [dynamic args]) async {
     if (_disposed) return null;
     if (!_isSupportedPlatform) return null;
-
     try {
-      final res = await _channel.invokeMethod<T>(method, args);
-      return res;
+      return await _channel.invokeMethod<T>(method, args);
     } catch (_) {
       return null;
     }
@@ -267,6 +215,8 @@ class MoussaHlsPlayerController {
   }) async {
     if (_disposed || !_isSupportedPlatform) return;
 
+    _qualities = List<MoussaHlsQuality>.from(qualities);
+
     final qualityUrls = <String, String>{
       for (final q in qualities) q.label: q.url,
     };
@@ -276,9 +226,6 @@ class MoussaHlsPlayerController {
       'initialQuality': initialQuality,
       'autoPlay': autoPlay,
     });
-
-    // UI responsiveness: optimistically set currentQuality 
-    _applyStatePatch(currentQuality: initialQuality);
   }
 
   Future<void> play() async => _safeInvoke<void>('play');
@@ -287,26 +234,30 @@ class MoussaHlsPlayerController {
   Future<void> seekToMs(int positionMs) async =>
       _safeInvoke<void>('seekTo', {'positionMs': positionMs});
 
-  Future<void> setQuality(String label) async {
-    if (_disposed) return;
-
-    await _safeInvoke<void>('setQuality', {'label': label});
-    // Optimistic
-    _applyStatePatch(currentQuality: label);
-  }
+  Future<void> setQuality(String label) async =>
+      _safeInvoke<void>('setQuality', {'label': label});
 
   Future<void> setVolume(double volume) async {
     if (_disposed) return;
-
     final v = volume.clamp(0.0, 1.0);
     await _safeInvoke<void>('setVolume', {'volume': v});
-
-    // state will also be updated by event (volume_changed),
-    // but keep UI responsive immediately
-    _applyStatePatch(volume: v);
+    if (!_disposed) {
+      if (v > 0.0001) _lastNonZeroVolume = v;
+      state.value = state.value.copyWith(volume: v);
+    }
   }
 
-  // ✅ fallback manual refresh (optional)
+  Future<void> toggleMute() async {
+    if (_disposed) return;
+    if (isMuted) {
+      final v = (_lastNonZeroVolume <= 0.0001) ? 1.0 : _lastNonZeroVolume;
+      await setVolume(v);
+    } else {
+      await setVolume(0.0);
+    }
+  }
+
+  // Optional fallback manual refresh
   Future<int> getPositionMs() async =>
       (await _safeInvoke<num>('getPosition'))?.toInt() ?? 0;
 
@@ -335,7 +286,7 @@ class MoussaHlsPlayerController {
 
     if (_disposed) return;
 
-    _applyStatePatch(
+    state.value = state.value.copyWith(
       isPlaying: results[0] as bool,
       positionMs: results[1] as int,
       durationMs: results[2] as int,

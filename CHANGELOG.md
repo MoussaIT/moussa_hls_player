@@ -112,5 +112,10 @@
 ### 🐞 Fixed
 - Inconsistent buffering state between Android & iOS
 - Duration not updating correctly on first load
+
+
+## [0.1.3]
+
+### 🐞 Fixed
 - Duplicate or stale playback events
 - Potential crashes when disposing platform views

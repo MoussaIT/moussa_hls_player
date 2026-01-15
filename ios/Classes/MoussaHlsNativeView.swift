@@ -47,6 +47,9 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
   private var lastSentPositionMs: Int64 = -1
   private var lastSentDurationMs: Int64 = -1
 
+  // ✅ Audio session guard (avoid re-applying too often)
+  private var audioSessionConfigured: Bool = false
+
   init(frame: CGRect, viewId: Int64, messenger: FlutterBinaryMessenger, args: Any?) {
 
     self.channel = FlutterMethodChannel(
@@ -79,9 +82,7 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
     self.eventSink = events
     sendEvent(type: "stream_ready", data: [:])
 
-    // start position ticks
     startPositionTimerIfNeeded()
-    // push initial state snapshot (if any)
     sendPlaybackSnapshot()
     return nil
   }
@@ -127,6 +128,8 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
       result(nil)
 
     case "play":
+      configureAudioSessionIfNeeded()
+      player.isMuted = false
       player.play()
       sendEvent(type: "playing", data: ["by": "method"])
       result(nil)
@@ -176,7 +179,11 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
       setMediaUrl(url, seekMs: posMs, play: wasPlaying)
 
       player.volume = vol
-      sendEvent(type: "quality_changed", data: ["label": label, "positionMs": posMs])
+      sendEvent(type: "quality_changed", data: [
+  "label": label,
+  "quality": label,
+  "positionMs": posMs
+])
       result(nil)
 
     case "setVolume":
@@ -191,6 +198,7 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
 
       let v = max(0.0, min(1.0, volume.floatValue))
       player.volume = v
+      player.isMuted = false
       sendEvent(type: "volume_changed", data: ["volume": Double(v)])
       result(nil)
 
@@ -218,42 +226,85 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
     }
   }
 
-  // MARK: - Player setup + observers
-  private func setMediaUrl(_ urlString: String, seekMs: Int, play: Bool) {
-    guard let url = URL(string: urlString) else {
-      sendError(code: 2990, message: "Invalid URL", details: ["url": urlString])
-      return
+  private func configureAudioSessionForPlayback() {
+  do {
+    let session = AVAudioSession.sharedInstance()
+
+    // Playback => الصوت يطلع حتى لو الجهاز Silent
+    if #available(iOS 10.0, *) {
+      try session.setCategory(.playback, mode: .moviePlayback, options: [])
+    } else {
+      try session.setCategory(.playback, options: [])
     }
 
-    let item = AVPlayerItem(url: url)
+    try session.setActive(true)
+  } catch {
+    sendError(
+      code: 1298,
+      message: "AudioSession error: \(error.localizedDescription)",
+      details: [:]
+    )
+  }
+}
 
-    // ✅ attach observers for errors + ready
-    attachItemObservers(item: item)
 
-    player.replaceCurrentItem(with: item)
+  // MARK: - Audio Session
+  private func configureAudioSessionIfNeeded() {
+    if audioSessionConfigured { return }
+    audioSessionConfigured = true
 
-    // reset last sent to force push
-    lastSentPositionMs = -1
-    lastSentDurationMs = -1
-
-    if seekMs > 0 {
-      let sec = Double(seekMs) / 1000.0
-      player.seek(to: CMTime(seconds: sec, preferredTimescale: 600))
+    let session = AVAudioSession.sharedInstance()
+    do {
+      // ✅ playback => audio works even if device is on silent
+      // ✅ allowBluetooth => airpods / bluetooth
+      // ✅ defaultToSpeaker => if route needs speaker by default
+      try session.setCategory(.playback, mode: .moviePlayback, options: [.allowBluetooth, .defaultToSpeaker])
+      try session.setActive(true)
+    } catch {
+      // don't crash; just emit debug event
+      sendEvent(type: "audio_session_error", data: [
+        "message": error.localizedDescription
+      ])
     }
-
-    if play { player.play() }
-
-    sendEvent(type: "source_set", data: [
-      "url": urlString,
-      "label": currentQuality ?? "",
-      "autoPlay": play
-    ])
-
-    startPositionTimerIfNeeded()
   }
 
+private func setMediaUrl(_ urlString: String, seekMs: Int, play: Bool) {
+  guard let url = URL(string: urlString) else {
+    sendError(code: 2990, message: "Invalid URL", details: ["url": urlString])
+    return
+  }
+
+  // ✅ مهم للصوت
+  configureAudioSessionIfNeeded()
+  player.isMuted = false
+
+  let item = AVPlayerItem(url: url)
+  attachItemObservers(item: item)
+  player.replaceCurrentItem(with: item)
+
+  lastSentPositionMs = -1
+  lastSentDurationMs = -1
+
+  if seekMs > 0 {
+    let sec = Double(seekMs) / 1000.0
+    player.seek(to: CMTime(seconds: sec, preferredTimescale: 600))
+  }
+
+  if play { player.play() }
+
+  // ✅ ابعت الاتنين عشان التوافق
+  sendEvent(type: "source_set", data: [
+    "url": urlString,
+    "label": currentQuality ?? "",
+    "quality": currentQuality ?? "",
+    "autoPlay": play
+  ])
+
+  startPositionTimerIfNeeded()
+}
+
+
   private func attachItemObservers(item: AVPlayerItem) {
-    // remove old
     statusObs?.invalidate()
     loadedRangesObs?.invalidate()
     NotificationCenter.default.removeObserver(self)
@@ -262,7 +313,6 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
       self.endObserver = nil
     }
 
-    // status -> ready / failed
     statusObs = item.observe(\.status, options: [.new]) { [weak self] item, _ in
       guard let self = self else { return }
       switch item.status {
@@ -292,7 +342,6 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
       }
     }
 
-    // loadedTimeRanges -> buffering progress hint
     loadedRangesObs = item.observe(\.loadedTimeRanges, options: [.new]) { [weak self] item, _ in
       guard let self = self else { return }
       guard let range = item.loadedTimeRanges.first?.timeRangeValue else { return }
@@ -305,7 +354,6 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
       ])
     }
 
-    // ended
     endObserver = NotificationCenter.default.addObserver(
       forName: .AVPlayerItemDidPlayToEndTime,
       object: item,
@@ -318,7 +366,6 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
       ])
     }
 
-    // failed to end
     NotificationCenter.default.addObserver(
       self,
       selector: #selector(playerFailedToEnd(_:)),
@@ -328,7 +375,6 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
   }
 
   private func attachPlayerStateObservers() {
-    // timeControlStatus -> playing/buffering/paused
     if #available(iOS 10.0, *) {
       timeControlObs = player.observe(\.timeControlStatus, options: [.new]) { [weak self] player, _ in
         guard let self = self else { return }
@@ -361,7 +407,6 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
     )
   }
 
-  // MARK: - Events helpers
   private func sendEvent(type: String, data: [String: Any]) {
     guard let sink = eventSink else { return }
     var payload: [String: Any] = [
@@ -382,16 +427,16 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
   }
 
   private func sendPlaybackSnapshot() {
-    sendEvent(type: "snapshot", data: [
-      "positionMs": getPositionMs(),
-      "durationMs": getDurationMs(),
-      "isPlaying": isPlaying(),
-      "label": currentQuality ?? "",
-      "volume": Double(player.volume)
-    ])
-  }
+  sendEvent(type: "snapshot", data: [
+    "positionMs": getPositionMs(),
+    "durationMs": getDurationMs(),
+    "isPlaying": isPlaying(),
+    "label": currentQuality ?? "",
+    "quality": currentQuality ?? "",
+    "volume": Double(player.volume)
+  ])
+}
 
-  // MARK: - Position timer (500ms)
   private func startPositionTimerIfNeeded() {
     guard eventSink != nil else { return }
     if positionTimer != nil { return }
@@ -403,7 +448,6 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
       self.sendDurationIfChanged()
 
       let pos = self.getPositionMs()
-      // avoid spamming identical values
       if pos != self.lastSentPositionMs {
         self.lastSentPositionMs = pos
         self.sendEvent(type: "position", data: ["positionMs": pos])
@@ -418,7 +462,6 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
     positionTimer = nil
   }
 
-  // MARK: - Errors
   private func sendError(code: Int, message: String, details: [String: Any] = [:]) {
     guard let sink = eventSink else { return }
     sink([
@@ -432,17 +475,15 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
   }
 
   private func mapIosError(nsCode: Int) -> Int {
-    // common AV errors
     switch nsCode {
-    case -11828: return 1201 // Cannot Decode
-    case -11850: return 1202 // Playback Failed
-    case -1100:  return 1203 // File not found
-    case -1009:  return 1204 // No internet
+    case -11828: return 1201
+    case -11850: return 1202
+    case -1100:  return 1203
+    case -1009:  return 1204
     default:     return 1299
     }
   }
 
-  // MARK: - Helpers
   private func getPositionMs() -> Int64 {
     let sec = CMTimeGetSeconds(player.currentTime())
     if sec.isNaN || sec.isInfinite { return 0 }
@@ -464,7 +505,6 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
     }
   }
 
-  // MARK: - Dispose
   private func disposeNative() {
     channel.setMethodCallHandler(nil)
 
@@ -485,7 +525,6 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
 
     stopPositionTimer()
 
-    // end stream cleanly
     eventSink?(FlutterEndOfEventStream)
     eventSink = nil
     eventChannel.setStreamHandler(nil)

@@ -34,7 +34,7 @@ Add the dependency to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  moussa_hls_player: ^0.1.2
+  moussa_hls_player: ^0.1.3
 ```
 
 
