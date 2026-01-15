@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/gestures.dart';
 
 import 'moussa_hls_player_controller.dart';
 import 'moussa_hls_player_types.dart';
@@ -152,13 +153,15 @@ class _MoussaHlsPlayerViewState extends State<MoussaHlsPlayerView> {
         onPlatformViewCreated: _onPlatformCreated,
         creationParams: const <String, dynamic>{},
         creationParamsCodec: const StandardMessageCodec(),
+        gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{}, // ✅ مهم
       );
     } else if (defaultTargetPlatform == TargetPlatform.iOS) {
-      platformView = UiKitView(
+      platformView = AndroidView(
         viewType: viewType,
         onPlatformViewCreated: _onPlatformCreated,
         creationParams: const <String, dynamic>{},
         creationParamsCodec: const StandardMessageCodec(),
+        gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{}, // ✅ مهم
       );
     } else {
       platformView = _unsupported(context);
