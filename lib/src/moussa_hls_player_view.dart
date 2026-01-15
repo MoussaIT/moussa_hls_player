@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -15,15 +14,17 @@ class MoussaHlsPlayerView extends StatefulWidget {
     required this.onCreated,
     this.unsupportedBuilder,
     this.showErrorOverlay = true,
+    this.showBufferingOverlay = true, // ✅ جديد
   });
 
   final MoussaHlsPlayerCreatedCallback onCreated;
-
-  /// Optional: custom UI when platform isn't supported
   final WidgetBuilder? unsupportedBuilder;
 
   /// ✅ Show native error overlay if player reports errors
   final bool showErrorOverlay;
+
+  /// ✅ Show buffering overlay (uses controller.state.isBuffering)
+  final bool showBufferingOverlay;
 
   @override
   State<MoussaHlsPlayerView> createState() => _MoussaHlsPlayerViewState();
@@ -31,33 +32,26 @@ class MoussaHlsPlayerView extends StatefulWidget {
 
 class _MoussaHlsPlayerViewState extends State<MoussaHlsPlayerView> {
   MoussaHlsPlayerController? _controller;
-  Timer? _ticker;
 
   @override
   void dispose() {
-    _ticker?.cancel();
     _controller?.dispose();
     super.dispose();
   }
 
-  void _startTicker(MoussaHlsPlayerController controller) {
-    _ticker?.cancel();
-    _ticker = Timer.periodic(const Duration(milliseconds: 400), (_) {
-      controller.refreshState();
-    });
-  }
-
-  void _onPlatformCreated(int id) {
+  void _onPlatformCreated(int id) async {
     final c = MoussaHlsPlayerController.fromViewId(id);
     _controller = c;
 
-    // ✅ هنا مكان EventChannel attach (لازم تكون عاملها في controller)
-    // هتبدأ تستقبل errors/events per viewId
+    // ✅ start receiving events (state/error/buffering/progress)
     c.attachToView();
 
     widget.onCreated(c);
-    _startTicker(c);
-    setState(() {});
+
+    // ✅ optional: one manual refresh at start (nice fallback)
+    await c.refreshState();
+
+    if (mounted) setState(() {});
   }
 
   @override
@@ -87,17 +81,45 @@ class _MoussaHlsPlayerViewState extends State<MoussaHlsPlayerView> {
       platformView = _unsupported(context);
     }
 
-    // ✅ لو مش عايز Overlay خالص
-    if (!widget.showErrorOverlay) return platformView;
+    // If no overlays at all, return raw platform view
+    if (!widget.showErrorOverlay && !widget.showBufferingOverlay) {
+      return platformView;
+    }
 
-    // ✅ Stack overlay لعرض error فوق الفيديو
     return Stack(
       fit: StackFit.expand,
       children: [
         platformView,
 
-        // لو controller لسه null، مفيش overlay
-        if (_controller != null)
+        // ✅ Buffering overlay (spinner)
+        if (_controller != null && widget.showBufferingOverlay)
+          ValueListenableBuilder(
+            valueListenable: _controller!.state,
+            builder: (context, s, _) {
+              if (!s.isBuffering) return const SizedBox.shrink();
+
+              return Positioned.fill(
+                child: IgnorePointer(
+                  ignoring: true,
+                  child: Container(
+                    color: Colors.black26,
+                    alignment: Alignment.center,
+                    child: const SizedBox(
+                      width: 42,
+                      height: 42,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 3,
+                        valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+
+        // ✅ Error overlay
+        if (_controller != null && widget.showErrorOverlay)
           ValueListenableBuilder(
             valueListenable: _controller!.error,
             builder: (context, err, _) {
@@ -127,16 +149,12 @@ class _MoussaHlsPlayerViewState extends State<MoussaHlsPlayerView> {
                         ),
                       ),
                       const SizedBox(height: 12),
-
-                      // ✅ زر Retry اختياري (لو عامل clearError + play)
                       Wrap(
                         spacing: 10,
                         children: [
                           ElevatedButton(
                             onPressed: () async {
-                              // اختياري: لو عامل clearError في controller
                               _controller!.clearError();
-                              // وممكن تحاول play تاني
                               await _controller!.play();
                             },
                             child: const Text('Retry'),

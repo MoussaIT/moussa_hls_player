@@ -2,6 +2,8 @@ package com.moussait.moussa_hls_player
 
 import android.content.Context
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.view.View
 import com.google.android.exoplayer2.ExoPlayer
 import com.google.android.exoplayer2.MediaItem
@@ -37,24 +39,39 @@ class MoussaHlsNativeView(
   private var qualityUrls: MutableMap<String, String> = mutableMapOf()
   private var currentQuality: String? = null
 
+  // ticker for position updates (500ms)
+  private val mainHandler = Handler(Looper.getMainLooper())
+  private var positionRunnable: Runnable? = null
+  private var lastSentPositionMs: Long = -1L
+  private var lastSentDurationMs: Long = -1L
+
+  // track last known state
+  private var lastPlaybackState: Int = Player.STATE_IDLE
+  private var lastIsPlaying: Boolean = false
+
   init {
     playerView.player = player
-    playerView.useController = false // Flutter هتعمل UI فوقه
+    playerView.useController = false // Flutter UI فوقه
     channel.setMethodCallHandler(this)
 
     // ✅ Stream handler
     eventChannel.setStreamHandler(object : EventChannel.StreamHandler {
       override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
         eventSink = events
+        sendEvent("stream_ready", emptyMap())
+        startPositionTickerIfNeeded()
+        sendSnapshot()
       }
 
       override fun onCancel(arguments: Any?) {
         eventSink = null
+        stopPositionTicker()
       }
     })
 
-    // ✅ Player error listener
+    // ✅ Player listener: errors + state + end
     player.addListener(object : Player.Listener {
+
       override fun onPlayerError(error: PlaybackException) {
         sendError(
           code = mapExoErrorCode(error),
@@ -67,8 +84,40 @@ class MoussaHlsNativeView(
         )
       }
 
+      override fun onIsPlayingChanged(isPlaying: Boolean) {
+        lastIsPlaying = isPlaying
+        if (isPlaying) {
+          sendEvent("playing", mapOf("by" to "state"))
+        } else {
+          sendEvent("paused", mapOf("by" to "state"))
+        }
+      }
+
       override fun onPlaybackStateChanged(playbackState: Int) {
-        // (اختياري) تقدر تبعت events buffering/ready لو حبيت بعدين
+        lastPlaybackState = playbackState
+
+        when (playbackState) {
+          Player.STATE_BUFFERING -> {
+            sendEvent("buffering", mapOf("reason" to "state_buffering"))
+          }
+
+          Player.STATE_READY -> {
+            sendEvent("ready", mapOf("durationMs" to getDurationMs()))
+            sendDurationIfChanged()
+          }
+
+          Player.STATE_ENDED -> {
+            sendEvent(
+              "ended",
+              mapOf(
+                "positionMs" to getPositionMs(),
+                "durationMs" to getDurationMs()
+              )
+            )
+          }
+
+          else -> {}
+        }
       }
     })
   }
@@ -76,15 +125,14 @@ class MoussaHlsNativeView(
   override fun getView(): View = playerView
 
   override fun dispose() {
-    try {
-      channel.setMethodCallHandler(null)
-    } catch (_: Exception) {}
+    try { channel.setMethodCallHandler(null) } catch (_: Exception) {}
+    try { eventChannel.setStreamHandler(null) } catch (_: Exception) {}
 
-    try {
-      eventChannel.setStreamHandler(null)
-    } catch (_: Exception) {}
+    stopPositionTicker()
 
+    eventSink?.endOfStream()
     eventSink = null
+
     player.release()
   }
 
@@ -99,7 +147,7 @@ class MoussaHlsNativeView(
 
         if (urlsAny == null || initialQuality.isNullOrEmpty()) {
           sendError(
-            code = 1001,
+            code = 2001,
             message = "bad_args: qualityUrls and initialQuality are required",
             details = mapOf("method" to "setSource")
           )
@@ -117,27 +165,40 @@ class MoussaHlsNativeView(
         val initialUrl = qualityUrls[initialQuality]
         if (initialUrl.isNullOrEmpty()) {
           sendError(
-            code = 1002,
-            message = "bad_quality: initialQuality not found in qualityUrls",
+            code = 2002,
+            message = "bad_quality: initialQuality not found",
             details = mapOf("initialQuality" to initialQuality)
           )
-          result.error("bad_quality", "initialQuality not found in qualityUrls", null)
+          result.error("bad_quality", "initialQuality not found", null)
           return
         }
 
         currentQuality = initialQuality
         setMediaUrl(initialUrl, seekMs = 0L, playWhenReady = autoPlay)
+
+        sendEvent(
+          "source_set",
+          mapOf(
+            "url" to initialUrl,
+            "label" to (currentQuality ?: ""),
+            "autoPlay" to autoPlay
+          )
+        )
+
+        startPositionTickerIfNeeded()
         result.success(null)
       }
 
       "play" -> {
         player.playWhenReady = true
         player.play()
+        sendEvent("playing", mapOf("by" to "method"))
         result.success(null)
       }
 
       "pause" -> {
         player.pause()
+        sendEvent("paused", mapOf("by" to "method"))
         result.success(null)
       }
 
@@ -146,14 +207,16 @@ class MoussaHlsNativeView(
         val pos = (argsMap?.get("positionMs") as? Number)?.toLong()
         if (pos == null) {
           sendError(
-            code = 1003,
+            code = 2003,
             message = "bad_args: positionMs required",
             details = mapOf("method" to "seekTo")
           )
           result.error("bad_args", "positionMs required", null)
           return
         }
+
         player.seekTo(pos)
+        sendEvent("seeked", mapOf("positionMs" to pos))
         result.success(null)
       }
 
@@ -163,7 +226,7 @@ class MoussaHlsNativeView(
 
         if (label.isNullOrEmpty()) {
           sendError(
-            code = 1004,
+            code = 2004,
             message = "bad_args: label required",
             details = mapOf("method" to "setQuality")
           )
@@ -174,7 +237,7 @@ class MoussaHlsNativeView(
         val url = qualityUrls[label]
         if (url.isNullOrEmpty()) {
           sendError(
-            code = 1005,
+            code = 2005,
             message = "bad_quality: quality label not found",
             details = mapOf("label" to label)
           )
@@ -183,14 +246,21 @@ class MoussaHlsNativeView(
         }
 
         val wasPlaying = player.isPlaying
-        val currentPos = player.currentPosition.coerceAtLeast(0L)
+        val currentPos = getPositionMs().coerceAtLeast(0L)
         val currentVol = player.volume
 
         currentQuality = label
         setMediaUrl(url, seekMs = currentPos, playWhenReady = wasPlaying)
 
-        // حافظ على الصوت
         player.volume = currentVol
+
+        sendEvent(
+          "quality_changed",
+          mapOf(
+            "label" to label,
+            "positionMs" to currentPos
+          )
+        )
 
         result.success(null)
       }
@@ -200,7 +270,7 @@ class MoussaHlsNativeView(
         val vol = (argsMap?.get("volume") as? Number)?.toFloat()
         if (vol == null) {
           sendError(
-            code = 1006,
+            code = 2006,
             message = "bad_args: volume required",
             details = mapOf("method" to "setVolume")
           )
@@ -209,20 +279,14 @@ class MoussaHlsNativeView(
         }
         val v = vol.coerceIn(0f, 1f)
         player.volume = v
+        sendEvent("volume_changed", mapOf("volume" to v.toDouble()))
         result.success(null)
       }
 
-      "getPosition" -> result.success(player.currentPosition)
-
-      "getDuration" -> {
-        val d = player.duration
-        result.success(if (d == Player.TIME_UNSET) 0L else d)
-      }
-
+      "getPosition" -> result.success(getPositionMs())
+      "getDuration" -> result.success(getDurationMs())
       "isPlaying" -> result.success(player.isPlaying)
-
       "getCurrentQuality" -> result.success(currentQuality)
-
       "getVolume" -> result.success(player.volume.toDouble())
 
       "dispose" -> {
@@ -239,28 +303,113 @@ class MoussaHlsNativeView(
       val mediaItem = MediaItem.fromUri(Uri.parse(url))
       player.setMediaItem(mediaItem)
       player.prepare()
+
+      lastSentPositionMs = -1L
+      lastSentDurationMs = -1L
+
       if (seekMs > 0) player.seekTo(seekMs)
       player.playWhenReady = playWhenReady
       if (playWhenReady) player.play()
+
+      sendSnapshot()
     } catch (e: Exception) {
       sendError(
-        code = 1999,
+        code = 2999,
         message = "setMediaUrl failed: ${e.message}",
         details = mapOf("url" to url, "exception" to e.toString())
       )
     }
   }
 
+  private fun sendEvent(type: String, data: Map<String, Any?>) {
+    val sink = eventSink ?: return
+    val payload = HashMap<String, Any?>()
+    payload["type"] = type
+    payload["platform"] = "android"
+    payload["ts"] = System.currentTimeMillis()
+    for ((k, v) in data) payload[k] = v
+    sink.success(payload)
+  }
+
+  private fun sendSnapshot() {
+    sendEvent(
+      "snapshot",
+      mapOf(
+        "positionMs" to getPositionMs(),
+        "durationMs" to getDurationMs(),
+        "isPlaying" to player.isPlaying,
+        "label" to (currentQuality ?: ""),
+        "volume" to player.volume.toDouble()
+      )
+    )
+  }
+
+  private fun sendDurationIfChanged() {
+    val d = getDurationMs()
+    if (d > 0 && d != lastSentDurationMs) {
+      lastSentDurationMs = d
+      sendEvent("duration", mapOf("durationMs" to d))
+    }
+  }
+
+  private fun startPositionTickerIfNeeded() {
+    if (eventSink == null) return
+    if (positionRunnable != null) return
+
+    val runnable = object : Runnable {
+      override fun run() {
+        if (eventSink == null) {
+          stopPositionTicker()
+          return
+        }
+
+        sendDurationIfChanged()
+
+        val pos = getPositionMs()
+        if (pos != lastSentPositionMs) {
+          lastSentPositionMs = pos
+          sendEvent("position", mapOf("positionMs" to pos))
+        }
+
+        val buffered = player.bufferedPosition.coerceAtLeast(0L)
+        sendEvent("buffer_update", mapOf("bufferedToMs" to buffered))
+
+        mainHandler.postDelayed(this, 500L)
+      }
+    }
+
+    positionRunnable = runnable
+    mainHandler.postDelayed(runnable, 200L)
+  }
+
+  private fun stopPositionTicker() {
+    val r = positionRunnable ?: return
+    mainHandler.removeCallbacks(r)
+    positionRunnable = null
+  }
+
   private fun sendError(code: Int, message: String, details: Map<String, Any?> = emptyMap()) {
-    eventSink?.success(
+    val sink = eventSink ?: return
+    sink.success(
       mapOf(
         "type" to "error",
         "platform" to "android",
         "code" to code,
         "message" to message,
-        "details" to details
+        "details" to details,
+        "ts" to System.currentTimeMillis()
       )
     )
+  }
+
+  private fun getPositionMs(): Long {
+    val p = player.currentPosition
+    return if (p < 0) 0L else p
+  }
+
+  private fun getDurationMs(): Long {
+    val d = player.duration
+    return if (d == Player.TIME_UNSET) 0L else d
   }
 
   private fun mapExoErrorCode(e: PlaybackException): Int {
@@ -274,4 +423,8 @@ class MoussaHlsNativeView(
       else -> 1199
     }
   }
+}
+
+private fun EventChannel.EventSink.endOfStream() {
+  try { success(null) } catch (_: Exception) {}
 }

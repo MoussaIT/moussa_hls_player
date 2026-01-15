@@ -2,10 +2,32 @@ import Flutter
 import UIKit
 import AVFoundation
 
+// ✅ Container UIView that keeps AVPlayerLayer in sync with resizing
+final class MoussaHlsContainerView: UIView {
+  let playerLayer: AVPlayerLayer
+
+  init(frame: CGRect, player: AVPlayer) {
+    self.playerLayer = AVPlayerLayer(player: player)
+    super.init(frame: frame)
+    backgroundColor = .black
+    playerLayer.videoGravity = .resizeAspect
+    layer.addSublayer(playerLayer)
+  }
+
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) has not been implemented")
+  }
+
+  override func layoutSubviews() {
+    super.layoutSubviews()
+    playerLayer.frame = bounds
+  }
+}
+
 final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHandler {
-  private let container: UIView = UIView()
+
   private let player = AVPlayer()
-  private let playerLayer: AVPlayerLayer
+  private let container: MoussaHlsContainerView
 
   private var channel: FlutterMethodChannel
 
@@ -17,9 +39,15 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
   private var currentQuality: String? = nil
 
   private var statusObs: NSKeyValueObservation?
+  private var timeControlObs: NSKeyValueObservation?
+  private var loadedRangesObs: NSKeyValueObservation?
+  private var endObserver: NSObjectProtocol?
+
+  private var positionTimer: DispatchSourceTimer?
+  private var lastSentPositionMs: Int64 = -1
+  private var lastSentDurationMs: Int64 = -1
 
   init(frame: CGRect, viewId: Int64, messenger: FlutterBinaryMessenger, args: Any?) {
-    self.playerLayer = AVPlayerLayer(player: player)
 
     self.channel = FlutterMethodChannel(
       name: "com.moussait.moussa_hls_player/methods/\(viewId)",
@@ -31,39 +59,36 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
       binaryMessenger: messenger
     )
 
+    self.container = MoussaHlsContainerView(frame: frame, player: player)
+
     super.init()
 
-    container.frame = frame
-    container.backgroundColor = .black
-
-    playerLayer.frame = container.bounds
-    playerLayer.videoGravity = .resizeAspect
-    container.layer.addSublayer(playerLayer)
-
     channel.setMethodCallHandler(handle)
-
-    // ✅ stream handler
     eventChannel.setStreamHandler(self)
+
+    // Observe global player state (playing/buffering/paused)
+    attachPlayerStateObservers()
   }
 
   func view() -> UIView {
     return container
   }
 
-  // ✅ keep layer in sync (important on iOS PlatformView resizing)
-  override func didMoveToSuperview() {
-    super.didMoveToSuperview()
-    playerLayer.frame = container.bounds
-  }
-
   // MARK: - Stream handler
   func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
     self.eventSink = events
+    sendEvent(type: "stream_ready", data: [:])
+
+    // start position ticks
+    startPositionTimerIfNeeded()
+    // push initial state snapshot (if any)
+    sendPlaybackSnapshot()
     return nil
   }
 
   func onCancel(withArguments arguments: Any?) -> FlutterError? {
     self.eventSink = nil
+    stopPositionTimer()
     return nil
   }
 
@@ -103,10 +128,12 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
 
     case "play":
       player.play()
+      sendEvent(type: "playing", data: ["by": "method"])
       result(nil)
 
     case "pause":
       player.pause()
+      sendEvent(type: "paused", data: ["by": "method"])
       result(nil)
 
     case "seekTo":
@@ -120,7 +147,9 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
       }
 
       let sec = positionMs.doubleValue / 1000.0
-      player.seek(to: CMTime(seconds: sec, preferredTimescale: 600))
+      player.seek(to: CMTime(seconds: sec, preferredTimescale: 600)) { [weak self] _ in
+        self?.sendEvent(type: "seeked", data: ["positionMs": positionMs.int64Value])
+      }
       result(nil)
 
     case "setQuality":
@@ -147,6 +176,7 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
       setMediaUrl(url, seekMs: posMs, play: wasPlaying)
 
       player.volume = vol
+      sendEvent(type: "quality_changed", data: ["label": label, "positionMs": posMs])
       result(nil)
 
     case "setVolume":
@@ -161,6 +191,7 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
 
       let v = max(0.0, min(1.0, volume.floatValue))
       player.volume = v
+      sendEvent(type: "volume_changed", data: ["volume": Double(v)])
       result(nil)
 
     case "getPosition":
@@ -196,10 +227,14 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
 
     let item = AVPlayerItem(url: url)
 
-    // ✅ attach observers for errors
-    attachObservers(item: item)
+    // ✅ attach observers for errors + ready
+    attachItemObservers(item: item)
 
     player.replaceCurrentItem(with: item)
+
+    // reset last sent to force push
+    lastSentPositionMs = -1
+    lastSentDurationMs = -1
 
     if seekMs > 0 {
       let sec = Double(seekMs) / 1000.0
@@ -207,16 +242,36 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
     }
 
     if play { player.play() }
+
+    sendEvent(type: "source_set", data: [
+      "url": urlString,
+      "label": currentQuality ?? "",
+      "autoPlay": play
+    ])
+
+    startPositionTimerIfNeeded()
   }
 
-  private func attachObservers(item: AVPlayerItem) {
+  private func attachItemObservers(item: AVPlayerItem) {
     // remove old
     statusObs?.invalidate()
+    loadedRangesObs?.invalidate()
     NotificationCenter.default.removeObserver(self)
+    if let endObserver = endObserver {
+      NotificationCenter.default.removeObserver(endObserver)
+      self.endObserver = nil
+    }
 
+    // status -> ready / failed
     statusObs = item.observe(\.status, options: [.new]) { [weak self] item, _ in
       guard let self = self else { return }
-      if item.status == .failed {
+      switch item.status {
+      case .readyToPlay:
+        self.sendEvent(type: "ready", data: [
+          "durationMs": self.getDurationMs()
+        ])
+        self.sendDurationIfChanged()
+      case .failed:
         let nsErr = item.error as NSError?
         let nsCode = nsErr?.code ?? -1
         let domain = nsErr?.domain ?? ""
@@ -232,15 +287,63 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
             "reason": nsErr?.localizedFailureReason ?? ""
           ]
         )
+      default:
+        break
       }
     }
 
+    // loadedTimeRanges -> buffering progress hint
+    loadedRangesObs = item.observe(\.loadedTimeRanges, options: [.new]) { [weak self] item, _ in
+      guard let self = self else { return }
+      guard let range = item.loadedTimeRanges.first?.timeRangeValue else { return }
+      let start = CMTimeGetSeconds(range.start)
+      let dur = CMTimeGetSeconds(range.duration)
+      if start.isNaN || dur.isNaN { return }
+      let bufferedTo = (start + dur) * 1000.0
+      self.sendEvent(type: "buffer_update", data: [
+        "bufferedToMs": Int64(bufferedTo)
+      ])
+    }
+
+    // ended
+    endObserver = NotificationCenter.default.addObserver(
+      forName: .AVPlayerItemDidPlayToEndTime,
+      object: item,
+      queue: .main
+    ) { [weak self] _ in
+      guard let self = self else { return }
+      self.sendEvent(type: "ended", data: [
+        "positionMs": self.getPositionMs(),
+        "durationMs": self.getDurationMs()
+      ])
+    }
+
+    // failed to end
     NotificationCenter.default.addObserver(
       self,
       selector: #selector(playerFailedToEnd(_:)),
       name: .AVPlayerItemFailedToPlayToEndTime,
       object: item
     )
+  }
+
+  private func attachPlayerStateObservers() {
+    // timeControlStatus -> playing/buffering/paused
+    if #available(iOS 10.0, *) {
+      timeControlObs = player.observe(\.timeControlStatus, options: [.new]) { [weak self] player, _ in
+        guard let self = self else { return }
+        switch player.timeControlStatus {
+        case .waitingToPlayAtSpecifiedRate:
+          self.sendEvent(type: "buffering", data: ["reason": "waitingToPlay"])
+        case .playing:
+          self.sendEvent(type: "playing", data: ["by": "state"])
+        case .paused:
+          self.sendEvent(type: "paused", data: ["by": "state"])
+        @unknown default:
+          break
+        }
+      }
+    }
   }
 
   @objc private func playerFailedToEnd(_ notification: Notification) {
@@ -258,13 +361,73 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
     )
   }
 
+  // MARK: - Events helpers
+  private func sendEvent(type: String, data: [String: Any]) {
+    guard let sink = eventSink else { return }
+    var payload: [String: Any] = [
+      "type": type,
+      "platform": "ios",
+      "ts": Int64(Date().timeIntervalSince1970 * 1000.0)
+    ]
+    for (k, v) in data { payload[k] = v }
+    sink(payload)
+  }
+
+  private func sendDurationIfChanged() {
+    let d = getDurationMs()
+    if d > 0 && d != lastSentDurationMs {
+      lastSentDurationMs = d
+      sendEvent(type: "duration", data: ["durationMs": d])
+    }
+  }
+
+  private func sendPlaybackSnapshot() {
+    sendEvent(type: "snapshot", data: [
+      "positionMs": getPositionMs(),
+      "durationMs": getDurationMs(),
+      "isPlaying": isPlaying(),
+      "label": currentQuality ?? "",
+      "volume": Double(player.volume)
+    ])
+  }
+
+  // MARK: - Position timer (500ms)
+  private func startPositionTimerIfNeeded() {
+    guard eventSink != nil else { return }
+    if positionTimer != nil { return }
+
+    let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.main)
+    timer.schedule(deadline: .now() + .milliseconds(200), repeating: .milliseconds(500))
+    timer.setEventHandler { [weak self] in
+      guard let self = self else { return }
+      self.sendDurationIfChanged()
+
+      let pos = self.getPositionMs()
+      // avoid spamming identical values
+      if pos != self.lastSentPositionMs {
+        self.lastSentPositionMs = pos
+        self.sendEvent(type: "position", data: ["positionMs": pos])
+      }
+    }
+    timer.resume()
+    positionTimer = timer
+  }
+
+  private func stopPositionTimer() {
+    positionTimer?.cancel()
+    positionTimer = nil
+  }
+
+  // MARK: - Errors
   private func sendError(code: Int, message: String, details: [String: Any] = [:]) {
-    eventSink?([
+    guard let sink = eventSink else { return }
+    sink([
       "type": "error",
       "platform": "ios",
       "code": code,
       "message": message,
-      "details": details
+      "details": details,
+      "ts": Int64(Date().timeIntervalSince1970 * 1000.0)
     ])
   }
 
@@ -301,16 +464,45 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
     }
   }
 
+  // MARK: - Dispose
   private func disposeNative() {
     channel.setMethodCallHandler(nil)
 
     statusObs?.invalidate()
     statusObs = nil
+
+    loadedRangesObs?.invalidate()
+    loadedRangesObs = nil
+
+    timeControlObs?.invalidate()
+    timeControlObs = nil
+
+    if let endObserver = endObserver {
+      NotificationCenter.default.removeObserver(endObserver)
+      self.endObserver = nil
+    }
     NotificationCenter.default.removeObserver(self)
 
+    stopPositionTimer()
+
+    // end stream cleanly
+    eventSink?(FlutterEndOfEventStream)
     eventSink = nil
     eventChannel.setStreamHandler(nil)
 
+    player.pause()
+    player.replaceCurrentItem(with: nil)
+  }
+
+  deinit {
+    statusObs?.invalidate()
+    loadedRangesObs?.invalidate()
+    timeControlObs?.invalidate()
+    if let endObserver = endObserver {
+      NotificationCenter.default.removeObserver(endObserver)
+    }
+    NotificationCenter.default.removeObserver(self)
+    stopPositionTimer()
     player.pause()
     player.replaceCurrentItem(with: nil)
   }
