@@ -2,7 +2,6 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter/gestures.dart';
 
 import 'moussa_hls_player_controller.dart';
 import 'moussa_hls_player_types.dart';
@@ -49,11 +48,18 @@ class _MoussaHlsPlayerViewState extends State<MoussaHlsPlayerView> {
   bool _isFullscreen = false;
 
   @override
-  void dispose() {
-    _hideTimer?.cancel();
-    _controller?.dispose();
-    super.dispose();
+void dispose() {
+  _hideTimer?.cancel();
+
+  final c = _controller;
+  if (c != null) {
+    c.pause(); // ✅ وقف التشغيل
+    // لو عندك stop() استخدمها بدل pause
   }
+
+  _controller?.dispose();
+  super.dispose();
+}
 
   void _onPlatformCreated(int id) async {
     final c = MoussaHlsPlayerController.fromViewId(id);
@@ -153,15 +159,13 @@ class _MoussaHlsPlayerViewState extends State<MoussaHlsPlayerView> {
         onPlatformViewCreated: _onPlatformCreated,
         creationParams: const <String, dynamic>{},
         creationParamsCodec: const StandardMessageCodec(),
-        gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{}, // ✅ مهم
       );
     } else if (defaultTargetPlatform == TargetPlatform.iOS) {
-      platformView = AndroidView(
+      platformView = UiKitView(
         viewType: viewType,
         onPlatformViewCreated: _onPlatformCreated,
         creationParams: const <String, dynamic>{},
         creationParamsCodec: const StandardMessageCodec(),
-        gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{}, // ✅ مهم
       );
     } else {
       platformView = _unsupported(context);
@@ -177,61 +181,65 @@ class _MoussaHlsPlayerViewState extends State<MoussaHlsPlayerView> {
       return platformView;
     }
 
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: _toggleControls,
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          platformView,
-          if (widget.child != null) widget.child!,
-
-          // ✅ Buffering overlay
-          if (c != null && widget.showBufferingOverlay)
-            ValueListenableBuilder(
-              valueListenable: c.state,
-              builder: (context, s, _) {
-                if (!s.isBuffering) return const SizedBox.shrink();
-                return Positioned.fill(
-                  child: IgnorePointer(
-                    ignoring: true,
-                    child: Container(
-                      color: Colors.black26,
-                      alignment: Alignment.center,
-                      child: const SizedBox(
-                        width: 42,
-                        height: 42,
-                        child: CircularProgressIndicator(strokeWidth: 3),
-                      ),
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        platformView,
+    
+        Positioned.fill(
+          child: GestureDetector(
+            behavior: HitTestBehavior.translucent,
+            onTap: _toggleControls,
+          ),
+        ),
+    
+        if (widget.child != null) widget.child!,
+    
+        // ✅ Buffering overlay
+        if (c != null && widget.showBufferingOverlay)
+          ValueListenableBuilder(
+            valueListenable: c.state,
+            builder: (context, s, _) {
+              if (!s.isBuffering) return const SizedBox.shrink();
+              return Positioned.fill(
+                child: IgnorePointer(
+                  ignoring: true,
+                  child: Container(
+                    color: Colors.black26,
+                    alignment: Alignment.center,
+                    child: const SizedBox(
+                      width: 42,
+                      height: 42,
+                      child: CircularProgressIndicator(strokeWidth: 3),
                     ),
                   ),
-                );
-              },
-            ),
-
-          // ✅ Controls overlay
-          if (c != null && widget.showControls)
-            ValueListenableBuilder(
-              valueListenable: c.state,
-              builder: (context, s, _) {
-                return AnimatedOpacity(
-                  opacity: _controlsVisible ? 1 : 0,
-                  duration: const Duration(milliseconds: 180),
-                  child: IgnorePointer(
-                    ignoring: !_controlsVisible,
-                    child: _ControlsOverlay(
-                      controller: c,
-                      state: s,
-                      onInteracted: _kickAutoHide,
-                      onToggleFullscreen: _toggleFullscreen,
-                      isFullscreen: _isFullscreen,
-                    ),
+                ),
+              );
+            },
+          ),
+    
+        // ✅ Controls overlay
+        if (c != null && widget.showControls)
+          ValueListenableBuilder(
+            valueListenable: c.state,
+            builder: (context, s, _) {
+              return AnimatedOpacity(
+                opacity: _controlsVisible ? 1 : 0,
+                duration: const Duration(milliseconds: 180),
+                child: IgnorePointer(
+                  ignoring: !_controlsVisible,
+                  child: _ControlsOverlay(
+                    controller: c,
+                    state: s,
+                    onInteracted: _kickAutoHide,
+                    onToggleFullscreen: _toggleFullscreen,
+                    isFullscreen: _isFullscreen,
                   ),
-                );
-              },
-            ),
-        ],
-      ),
+                ),
+              );
+            },
+          ),
+      ],
     );
   }
 
