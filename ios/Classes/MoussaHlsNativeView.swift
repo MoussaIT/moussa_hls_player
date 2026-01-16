@@ -47,6 +47,17 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
   private var lastSentPositionMs: Int64 = -1
   private var lastSentDurationMs: Int64 = -1
 
+  // =========================
+  // Safety guards + extras
+  // =========================
+  private var pendingSeekMs: Int64? = nil
+  private var desiredRate: Float = 1.0
+
+  // Pinch-to-zoom (opt-in)
+  private var zoomEnabled: Bool = false
+  private var maxZoom: CGFloat = 4.0
+  private var currentZoom: CGFloat = 1.0
+
   // ✅ Audio session guard (avoid re-applying too often)
   private var audioSessionConfigured: Bool = false
 
@@ -65,6 +76,16 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
     self.container = MoussaHlsContainerView(frame: frame, player: player)
 
     super.init()
+
+    // Pinch-to-zoom gestures (disabled by default)
+    let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
+    container.addGestureRecognizer(pinch)
+    pinch.cancelsTouchesInView = false
+
+    let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap(_:)))
+    doubleTap.numberOfTapsRequired = 2
+    container.addGestureRecognizer(doubleTap)
+    doubleTap.cancelsTouchesInView = false
 
     channel.setMethodCallHandler(handle)
     eventChannel.setStreamHandler(self)
@@ -131,6 +152,8 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
       configureAudioSessionIfNeeded()
       player.isMuted = false
       player.play()
+      // Apply desired playback speed
+      player.rate = desiredRate
       sendEvent(type: "playing", data: ["by": "method"])
       result(nil)
 
@@ -149,10 +172,83 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
         return
       }
 
-      let sec = positionMs.doubleValue / 1000.0
-      player.seek(to: CMTime(seconds: sec, preferredTimescale: 600)) { [weak self] _ in
-        self?.sendEvent(type: "seeked", data: ["positionMs": positionMs.int64Value])
+      let targetMs = Int64(positionMs.intValue)
+      if isBufferingNow() {
+        pendingSeekMs = max(0, targetMs)
+        sendEvent(type: "seek_queued", data: ["positionMs": pendingSeekMs ?? 0, "when": "buffering"])
+        result(nil)
+        return
       }
+
+      seekToSafely(targetMs: targetMs, emitEvent: true)
+      result(nil)
+
+    case "seekBy":
+      guard
+        let args = call.arguments as? [String: Any],
+        let delta = args["deltaMs"] as? NSNumber
+      else {
+        sendError(code: 2010, message: "bad_args: deltaMs required", details: ["method": "seekBy"])
+        result(FlutterError(code: "bad_args", message: "deltaMs required", details: nil))
+        return
+      }
+
+      let target = Int64(getPositionMs()) + delta.int64Value
+      let clamped = max(0, target)
+      if isBufferingNow() {
+        pendingSeekMs = clamped
+        sendEvent(type: "seek_queued", data: ["positionMs": clamped, "when": "buffering"])
+      } else {
+        seekToSafely(targetMs: clamped, emitEvent: true)
+      }
+      result(nil)
+
+    case "setPlaybackSpeed":
+      guard
+        let args = call.arguments as? [String: Any],
+        let speedNum = args["speed"] as? NSNumber
+      else {
+        sendError(code: 2011, message: "bad_args: speed required", details: ["method": "setPlaybackSpeed"])
+        result(FlutterError(code: "bad_args", message: "speed required", details: nil))
+        return
+      }
+      let speed = max(0.25, min(4.0, speedNum.doubleValue))
+      desiredRate = Float(speed)
+      // If currently playing, apply immediately. Otherwise it will be applied on next play.
+      if isPlaying() {
+        player.rate = desiredRate
+      }
+      sendEvent(type: "playback_speed", data: ["speed": speed])
+      result(nil)
+
+    case "enableZoom":
+      let args = call.arguments as? [String: Any]
+      let enabled = (args?["enabled"] as? Bool) ?? true
+      zoomEnabled = enabled
+      sendEvent(type: "zoom_enabled", data: ["enabled": enabled])
+      result(nil)
+
+    case "setMaxZoom":
+      guard
+        let args = call.arguments as? [String: Any],
+        let mz = args["max"] as? NSNumber
+      else {
+        sendError(code: 2013, message: "bad_args: max required", details: ["method": "setMaxZoom"])
+        result(FlutterError(code: "bad_args", message: "max required", details: nil))
+        return
+      }
+      maxZoom = CGFloat(max(1.0, min(8.0, mz.doubleValue)))
+      if currentZoom > maxZoom {
+        currentZoom = maxZoom
+        applyZoom(scale: currentZoom)
+      }
+      sendEvent(type: "zoom_max", data: ["max": Double(maxZoom)])
+      result(nil)
+
+    case "resetZoom":
+      currentZoom = 1.0
+      applyZoom(scale: 1.0)
+      sendEvent(type: "zoom_changed", data: ["scale": 1.0])
       result(nil)
 
     case "setQuality":
@@ -290,7 +386,10 @@ private func setMediaUrl(_ urlString: String, seekMs: Int, play: Bool) {
     player.seek(to: CMTime(seconds: sec, preferredTimescale: 600))
   }
 
-  if play { player.play() }
+  if play {
+    player.play()
+    player.rate = desiredRate
+  }
 
   // ✅ ابعت الاتنين عشان التوافق
   sendEvent(type: "source_set", data: [
@@ -321,6 +420,7 @@ private func setMediaUrl(_ urlString: String, seekMs: Int, play: Bool) {
           "durationMs": self.getDurationMs()
         ])
         self.sendDurationIfChanged()
+        self.applyPendingSeekIfPossible()
       case .failed:
         let nsErr = item.error as NSError?
         let nsCode = nsErr?.code ?? -1
@@ -383,8 +483,10 @@ private func setMediaUrl(_ urlString: String, seekMs: Int, play: Bool) {
           self.sendEvent(type: "buffering", data: ["reason": "waitingToPlay"])
         case .playing:
           self.sendEvent(type: "playing", data: ["by": "state"])
+          self.applyPendingSeekIfPossible()
         case .paused:
           self.sendEvent(type: "paused", data: ["by": "state"])
+          self.applyPendingSeekIfPossible()
         @unknown default:
           break
         }
@@ -472,6 +574,79 @@ private func setMediaUrl(_ urlString: String, seekMs: Int, play: Bool) {
       "details": details,
       "ts": Int64(Date().timeIntervalSince1970 * 1000.0)
     ])
+  }
+
+  // MARK: - Safe seek helpers
+  private func isBufferingNow() -> Bool {
+    if #available(iOS 10.0, *) {
+      return player.timeControlStatus == .waitingToPlayAtSpecifiedRate
+    }
+    return false
+  }
+
+  private func seekToSafely(targetMs: Int64, emitEvent: Bool) {
+    let safeTarget = max(0, targetMs)
+    let duration = getDurationMs()
+    let finalTarget = (duration > 0) ? min(safeTarget, duration) : safeTarget
+
+    guard let item = player.currentItem else {
+      pendingSeekMs = finalTarget
+      if emitEvent { sendEvent(type: "seek_queued", data: ["positionMs": finalTarget, "when": "no_item"]) }
+      return
+    }
+
+    if item.status != .readyToPlay {
+      pendingSeekMs = finalTarget
+      if emitEvent { sendEvent(type: "seek_queued", data: ["positionMs": finalTarget, "when": "not_ready"]) }
+      return
+    }
+
+    let wasPlaying = isPlaying()
+    let sec = Double(finalTarget) / 1000.0
+    let time = CMTime(seconds: sec, preferredTimescale: 600)
+    player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+      guard let self = self else { return }
+      if wasPlaying {
+        self.player.rate = self.desiredRate
+      }
+      if emitEvent {
+        self.sendEvent(type: "seeked", data: ["positionMs": finalTarget])
+      }
+    }
+  }
+
+  private func applyPendingSeekIfPossible() {
+    guard let pending = pendingSeekMs else { return }
+    if isBufferingNow() { return }
+    guard let item = player.currentItem, item.status == .readyToPlay else { return }
+
+    pendingSeekMs = nil
+    seekToSafely(targetMs: pending, emitEvent: true)
+  }
+
+  // MARK: - Zoom
+  private func applyZoom(scale: CGFloat) {
+    let s = max(1.0, min(maxZoom, scale))
+    currentZoom = s
+    container.playerLayer.setAffineTransform(CGAffineTransform(scaleX: s, y: s))
+    // Keep the video centered
+    container.playerLayer.position = CGPoint(x: container.bounds.midX, y: container.bounds.midY)
+  }
+
+  @objc private func handlePinch(_ gr: UIPinchGestureRecognizer) {
+    guard zoomEnabled else { return }
+    if gr.state == .began || gr.state == .changed {
+      let next = currentZoom * gr.scale
+      applyZoom(scale: next)
+      gr.scale = 1.0
+      sendEvent(type: "zoom_changed", data: ["scale": Double(currentZoom)])
+    }
+  }
+
+  @objc private func handleDoubleTap(_ gr: UITapGestureRecognizer) {
+    guard zoomEnabled else { return }
+    applyZoom(scale: 1.0)
+    sendEvent(type: "zoom_changed", data: ["scale": 1.0])
   }
 
   private func mapIosError(nsCode: Int) -> Int {

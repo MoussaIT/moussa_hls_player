@@ -4,12 +4,15 @@ import android.content.Context
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.view.MotionEvent
 import android.view.View
 import com.google.android.exoplayer2.ExoPlayer
 import com.google.android.exoplayer2.MediaItem
 import com.google.android.exoplayer2.Player
+import com.google.android.exoplayer2.PlaybackParameters
 import com.google.android.exoplayer2.PlaybackException
 import com.google.android.exoplayer2.ui.PlayerView
+import android.view.ScaleGestureDetector
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
@@ -49,7 +52,45 @@ class MoussaHlsNativeView(
   private var lastPlaybackState: Int = Player.STATE_IDLE
   private var lastIsPlaying: Boolean = false
 
+  // =========================
+  // Safety guards + extras
+  // =========================
+  private var isBufferingNow: Boolean = false
+  private var pendingSeekMs: Long? = null
+
+  // Playback speed
+  private var desiredSpeed: Float = 1.0f
+
+  // Pinch-to-zoom (opt-in)
+  private var zoomEnabled: Boolean = false
+  private var maxZoom: Float = 4.0f
+  private var currentZoom: Float = 1.0f
+  private val scaleDetector: ScaleGestureDetector
+
   init {
+    // Pinch-to-zoom handler (disabled by default)
+    scaleDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+      override fun onScale(detector: ScaleGestureDetector): Boolean {
+        if (!zoomEnabled) return false
+        val factor = detector.scaleFactor
+        val next = (currentZoom * factor).coerceIn(1.0f, maxZoom)
+        if (next != currentZoom) {
+          currentZoom = next
+          playerView.scaleX = currentZoom
+          playerView.scaleY = currentZoom
+          sendEvent("zoom_changed", mapOf("scale" to currentZoom.toDouble()))
+        }
+        return true
+      }
+    })
+
+    playerView.setOnTouchListener { _, event: MotionEvent ->
+      if (!zoomEnabled) return@setOnTouchListener false
+      val handled = scaleDetector.onTouchEvent(event)
+      // Only consume if we're actively scaling; otherwise let Flutter gestures (if any) pass.
+      handled || scaleDetector.isInProgress
+    }
+
     playerView.player = player
     playerView.useController = false // Flutter UI فوقه
     channel.setMethodCallHandler(this)
@@ -98,12 +139,20 @@ class MoussaHlsNativeView(
 
         when (playbackState) {
           Player.STATE_BUFFERING -> {
+            isBufferingNow = true
             sendEvent("buffering", mapOf("reason" to "state_buffering"))
           }
 
           Player.STATE_READY -> {
+            isBufferingNow = false
             sendEvent("ready", mapOf("durationMs" to getDurationMs()))
             sendDurationIfChanged()
+
+            // Apply a pending seek (if any) once we become READY.
+            pendingSeekMs?.let { pending ->
+              pendingSeekMs = null
+              seekToSafely(pending, emitEvent = true)
+            }
           }
 
           Player.STATE_ENDED -> {
@@ -215,8 +264,100 @@ class MoussaHlsNativeView(
           return
         }
 
-        player.seekTo(pos)
-        sendEvent("seeked", mapOf("positionMs" to pos))
+        if (isBufferingNow) {
+          pendingSeekMs = pos
+          sendEvent("seek_queued", mapOf("positionMs" to pos, "when" to "buffering"))
+        } else {
+          seekToSafely(pos, emitEvent = true)
+        }
+        result.success(null)
+      }
+
+      "seekBy" -> {
+        val argsMap = call.arguments as? Map<*, *>
+        val delta = (argsMap?.get("deltaMs") as? Number)?.toLong()
+        if (delta == null) {
+          sendError(
+            code = 2010,
+            message = "bad_args: deltaMs required",
+            details = mapOf("method" to "seekBy")
+          )
+          result.error("bad_args", "deltaMs required", null)
+          return
+        }
+
+        val target = (getPositionMs() + delta).coerceAtLeast(0L)
+        if (isBufferingNow) {
+          pendingSeekMs = target
+          sendEvent("seek_queued", mapOf("positionMs" to target, "when" to "buffering"))
+        } else {
+          seekToSafely(target, emitEvent = true)
+        }
+        result.success(null)
+      }
+
+      "setPlaybackSpeed" -> {
+        val argsMap = call.arguments as? Map<*, *>
+        val sp = (argsMap?.get("speed") as? Number)?.toFloat()
+        if (sp == null) {
+          sendError(
+            code = 2011,
+            message = "bad_args: speed required",
+            details = mapOf("method" to "setPlaybackSpeed")
+          )
+          result.error("bad_args", "speed required", null)
+          return
+        }
+        val speed = sp.coerceIn(0.25f, 4.0f)
+        desiredSpeed = speed
+        try {
+          player.playbackParameters = PlaybackParameters(speed)
+          sendEvent("playback_speed", mapOf("speed" to speed.toDouble()))
+        } catch (e: Exception) {
+          sendError(
+            code = 2012,
+            message = "setPlaybackSpeed failed: ${e.message}",
+            details = mapOf("speed" to speed.toDouble())
+          )
+        }
+        result.success(null)
+      }
+
+      "enableZoom" -> {
+        val argsMap = call.arguments as? Map<*, *>
+        val enabled = (argsMap?.get("enabled") as? Boolean) ?: true
+        zoomEnabled = enabled
+        sendEvent("zoom_enabled", mapOf("enabled" to enabled))
+        result.success(null)
+      }
+
+      "setMaxZoom" -> {
+        val argsMap = call.arguments as? Map<*, *>
+        val mz = (argsMap?.get("max") as? Number)?.toFloat()
+        if (mz == null) {
+          sendError(
+            code = 2013,
+            message = "bad_args: max required",
+            details = mapOf("method" to "setMaxZoom")
+          )
+          result.error("bad_args", "max required", null)
+          return
+        }
+        maxZoom = mz.coerceIn(1.0f, 8.0f)
+        if (currentZoom > maxZoom) {
+          currentZoom = maxZoom
+          playerView.scaleX = currentZoom
+          playerView.scaleY = currentZoom
+        }
+        sendEvent("zoom_max", mapOf("max" to maxZoom.toDouble()))
+        result.success(null)
+      }
+
+      "resetZoom" -> {
+        currentZoom = 1.0f
+        playerView.scaleX = 1.0f
+        playerView.scaleY = 1.0f
+        sendEvent("zoom_changed", mapOf("scale" to 1.0))
         result.success(null)
       }
 
@@ -304,10 +445,17 @@ class MoussaHlsNativeView(
       player.setMediaItem(mediaItem)
       player.prepare()
 
+      // Re-apply the desired playback speed for the newly prepared media.
+      try {
+        player.playbackParameters = PlaybackParameters(desiredSpeed)
+      } catch (_: Exception) {
+        // ignore
+      }
+
       lastSentPositionMs = -1L
       lastSentDurationMs = -1L
 
-      if (seekMs > 0) player.seekTo(seekMs)
+      if (seekMs > 0) seekToSafely(seekMs, emitEvent = false)
       player.playWhenReady = playWhenReady
       if (playWhenReady) player.play()
 
@@ -400,6 +548,32 @@ class MoussaHlsNativeView(
         "ts" to System.currentTimeMillis()
       )
     )
+  }
+
+  private fun seekToSafely(targetMs: Long, emitEvent: Boolean) {
+    val safeTarget = targetMs.coerceAtLeast(0L)
+    val duration = getDurationMs()
+
+    // If duration is known, clamp to [0, duration]. If unknown (0), just clamp to >=0.
+    val finalTarget = if (duration > 0L) safeTarget.coerceAtMost(duration) else safeTarget
+
+    // Avoid seeking while the player is idle (not prepared). Just queue it.
+    if (lastPlaybackState == Player.STATE_IDLE) {
+      pendingSeekMs = finalTarget
+      if (emitEvent) sendEvent("seek_queued", mapOf("positionMs" to finalTarget, "when" to "idle"))
+      return
+    }
+
+    try {
+      player.seekTo(finalTarget)
+      if (emitEvent) sendEvent("seeked", mapOf("positionMs" to finalTarget))
+    } catch (e: Exception) {
+      sendError(
+        code = 2014,
+        message = "seekTo failed: ${e.message}",
+        details = mapOf("positionMs" to finalTarget, "exception" to e.toString())
+      )
+    }
   }
 
   private fun getPositionMs(): Long {
