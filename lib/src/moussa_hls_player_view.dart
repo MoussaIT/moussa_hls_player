@@ -323,6 +323,7 @@ class _ControlsOverlay extends StatelessWidget {
                     controller: controller,
                     onInteracted: onInteracted,
                   ),
+                  SizedBox(width: 10,),
                   PopupMenuButton<double>(
                     tooltip: 'Speed',
                     color: Colors.black87,

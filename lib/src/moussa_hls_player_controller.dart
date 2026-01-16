@@ -245,20 +245,20 @@ class MoussaHlsPlayerController {
       _safeInvoke<void>('setPlaybackSpeed', {'speed': speed});
 
   /// Enable/disable pinch-to-zoom (typically enable in fullscreen only).
-  Future<void> setZoomEnabled(bool enabled) async =>
-      // Native method name is `enableZoom`.
-      _safeInvoke<void>('enableZoom', {'enabled': enabled});
+  // Future<void> setZoomEnabled(bool enabled) async =>
+  //     // Native method name is `enableZoom`.
+  //     _safeInvoke<void>('enableZoom', {'enabled': enabled});
 
   /// Set maximum zoom factor (default is 4.0 on native).
-  Future<void> setMaxZoom(double maxZoom) async =>
-      // Native expects key `max`.
-      _safeInvoke<void>('setMaxZoom', {'max': maxZoom});
+  // Future<void> setMaxZoom(double maxZoom) async =>
+  //     // Native expects key `max`.
+  //     _safeInvoke<void>('setMaxZoom', {'max': maxZoom});
 
-  /// Reset zoom back to 1.0.
-  Future<void> resetZoom() async => _safeInvoke<void>('resetZoom');
+  // /// Reset zoom back to 1.0.
+  // Future<void> resetZoom() async => _safeInvoke<void>('resetZoom');
 
-  Future<void> setZoomScale(double scale) async =>
-    _safeInvoke<void>('setZoomScale', {'scale': scale});
+  // Future<void> setZoomScale(double scale) async =>
+  //   _safeInvoke<void>('setZoomScale', {'scale': scale});
 
   Future<void> setQuality(String label) async =>
       _safeInvoke<void>('setQuality', {'label': label});

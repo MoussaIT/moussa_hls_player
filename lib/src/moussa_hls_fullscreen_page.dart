@@ -1,13 +1,11 @@
 import 'dart:async';
-
 import 'package:flutter/material.dart';
+
 import 'moussa_fullscreen.dart';
 import 'moussa_hls_player_controller.dart';
 import 'moussa_hls_player_view.dart';
 import 'moussa_minimal_controls.dart';
 
-/// Result returned when exiting fullscreen.
-/// Used to sync state back to the original (inline) controller.
 class MoussaFullscreenResult {
   final int positionMs;
   final bool wasPlaying;
@@ -23,25 +21,21 @@ class MoussaFullscreenResult {
 }
 
 class MoussaHlsFullscreenPage extends StatefulWidget {
-  const MoussaHlsFullscreenPage({
-    super.key,
-    required this.sourceController,
-  });
+  const MoussaHlsFullscreenPage({super.key, required this.sourceController});
 
   final MoussaHlsPlayerController sourceController;
 
   @override
-  State<MoussaHlsFullscreenPage> createState() => _MoussaHlsFullscreenPageState();
+  State<MoussaHlsFullscreenPage> createState() =>
+      _MoussaHlsFullscreenPageState();
 }
 
 class _MoussaHlsFullscreenPageState extends State<MoussaHlsFullscreenPage> {
   MoussaHlsPlayerController? _fsController;
 
-  double _zoom = 1.0;
-  double _zoomBase = 1.0;
-  Timer? _zoomThrottle;
-  double _pendingZoom = 1.0;
-  
+  // ✅ Flutter zoom controller (pinch + pan)
+  final TransformationController _tx = TransformationController();
+
   @override
   void initState() {
     super.initState();
@@ -51,7 +45,7 @@ class _MoussaHlsFullscreenPageState extends State<MoussaHlsFullscreenPage> {
   @override
   void dispose() {
     MoussaFullscreen.exit();
-    _zoomThrottle?.cancel();
+    _tx.dispose();
     super.dispose();
   }
 
@@ -60,7 +54,8 @@ class _MoussaHlsFullscreenPageState extends State<MoussaHlsFullscreenPage> {
     final s = src.state.value;
 
     final qualities = src.qualities;
-    final initial = (s.currentQuality != null &&
+    final initial =
+        (s.currentQuality != null &&
             qualities.any((q) => q.label == s.currentQuality))
         ? s.currentQuality!
         : (qualities.isNotEmpty ? qualities.first.label : '');
@@ -69,18 +64,15 @@ class _MoussaHlsFullscreenPageState extends State<MoussaHlsFullscreenPage> {
       await fs.setSource(
         qualities: qualities,
         initialQuality: initial,
-        autoPlay: s.isPlaying, // يكمل نفس حالة التشغيل
+        autoPlay: s.isPlaying,
       );
 
-      // نفس الصوت
       await fs.setVolume(s.volume);
 
-      // نفس المكان
       if (s.positionMs > 0) {
         await fs.seekToMs(s.positionMs);
       }
 
-      // لو كان شغال خليّه يكمل
       if (s.isPlaying) {
         await fs.play();
       }
@@ -107,14 +99,20 @@ class _MoussaHlsFullscreenPageState extends State<MoussaHlsFullscreenPage> {
   }
 
   void _exitFullscreen() {
-    // Disable zoom when leaving fullscreen to avoid gesture conflicts inline.
-    final c = _fsController;
-    if (c != null) {
-      // Best-effort; ignore failures.
-      c.setZoomEnabled(false);
-      c.resetZoom();
-    }
     Navigator.of(context).pop(_currentResult());
+  }
+
+  // ✅ double tap: toggle 1x <-> 2x (تقدر تخليها 3x لو عايز)
+  void _onDoubleTap() {
+    final m = _tx.value;
+    final currentScale = m.getMaxScaleOnAxis();
+
+    if (currentScale > 1.01) {
+      _tx.value = Matrix4.identity();
+    } else {
+      // zoom in to 2x around center
+      _tx.value = Matrix4.identity()..scale(2.0);
+    }
   }
 
   @override
@@ -126,56 +124,58 @@ class _MoussaHlsFullscreenPageState extends State<MoussaHlsFullscreenPage> {
       },
       child: Scaffold(
         backgroundColor: Colors.black,
-        body: GestureDetector(
-  behavior: HitTestBehavior.translucent,
+        body: Stack(
+          fit: StackFit.expand,
+          children: [
+            // ✅ Flutter Zoom: pinch + pan
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onDoubleTap: _onDoubleTap,
+              child: InteractiveViewer(
+                transformationController: _tx,
+                minScale: 1.0,
+                maxScale: 4.0,
+                // ✅ يسمح إنه يطلع برا الإطار عادي
+                constrained: false,
+                // ✅ pan بحرية (بدون حدود)
+                boundaryMargin: const EdgeInsets.all(double.infinity),
+                child: Center(
+                  child: LayoutBuilder(
+                    builder: (context, cts) {
+                      final w = cts.maxWidth;
+                      final h = cts.maxHeight;
 
-  onScaleStart: (_) {
-    _zoomBase = _zoom;
-  },
+                      // حماية من القيم الغريبة
+                      final ratio = (h <= 0) ? (16 / 9) : (w / h);
 
-  onScaleUpdate: (d) {
-  final c = _fsController;
-  if (c == null) return;
-
-  _pendingZoom = (_zoomBase * d.scale).clamp(1.0, 4.0);
-  _zoom = _pendingZoom;
-
-  // throttle: ابعت كل 50ms بس
-  if (_zoomThrottle?.isActive ?? false) return;
-  _zoomThrottle = Timer(const Duration(milliseconds: 50), () {
-    final cc = _fsController;
-    if (cc == null) return;
-    cc.setZoomScale(_pendingZoom); // ✅ بدون await
-  });
-},
-
-  onDoubleTap: () {
-  final c = _fsController;
-  if (c == null) return;
-  _zoom = 1.0;
-  _pendingZoom = 1.0;
-  c.resetZoom(); // بدون await
-},
-
-  child: MoussaHlsPlayerView(
-            onCreated: (fs) async {
-              _fsController = fs;
-              await _syncFromSource(fs);
-          
-              // Enable pinch-to-zoom in fullscreen (1..4 by default)
-              await fs.setMaxZoom(4.0);
-              await fs.setZoomEnabled(true);
-            },
-            showErrorOverlay: true,
-            showBufferingOverlay: true,
-            showControls: false,
-            child: (_fsController == null)
-                ? const SizedBox.shrink()
-                : MoussaMinimalControls(
-                    controller: _fsController!,
-                    onExitFullscreen: _exitFullscreen,
+                      return Center(
+                        child: AspectRatio(
+                          aspectRatio: ratio,
+                          child: MoussaHlsPlayerView(
+                            onCreated: (fs) async {
+                              _fsController = fs;
+                              await _syncFromSource(fs);
+                            },
+                            showErrorOverlay: true,
+                            showBufferingOverlay: true,
+                            showControls: false,
+                            child: const SizedBox.shrink(),
+                          ),
+                        ),
+                      );
+                    },
                   ),
-          ),
+                ),
+              ),
+            ),
+
+            // ✅ Controls overlay فوق الفيديو (مبتتأثرش بالـ pinch)
+            if (_fsController != null)
+              MoussaMinimalControls(
+                controller: _fsController!,
+                onExitFullscreen: _exitFullscreen,
+              ),
+          ],
         ),
       ),
     );
