@@ -35,6 +35,9 @@ class MoussaHlsFullscreenPage extends StatefulWidget {
 class _MoussaHlsFullscreenPageState extends State<MoussaHlsFullscreenPage> {
   MoussaHlsPlayerController? _fsController;
 
+  double _zoom = 1.0;
+  double _zoomBase = 1.0;
+  
   @override
   void initState() {
     super.initState();
@@ -118,24 +121,52 @@ class _MoussaHlsFullscreenPageState extends State<MoussaHlsFullscreenPage> {
       },
       child: Scaffold(
         backgroundColor: Colors.black,
-        body: MoussaHlsPlayerView(
-          onCreated: (fs) async {
-            _fsController = fs;
-            await _syncFromSource(fs);
+        body: GestureDetector(
+  behavior: HitTestBehavior.translucent,
 
-            // Enable pinch-to-zoom in fullscreen (1..4 by default)
-            await fs.setMaxZoom(4.0);
-            await fs.setZoomEnabled(true);
-          },
-          showErrorOverlay: true,
-          showBufferingOverlay: true,
-          showControls: false,
-          child: (_fsController == null)
-              ? const SizedBox.shrink()
-              : MoussaMinimalControls(
-                  controller: _fsController!,
-                  onExitFullscreen: _exitFullscreen,
-                ),
+  onScaleStart: (_) {
+    _zoomBase = _zoom;
+  },
+
+  onScaleUpdate: (d) async {
+    final c = _fsController;
+    if (c == null) return;
+
+    // scale بتطلع relative للgesture الحالي
+    final next = (_zoomBase * d.scale).clamp(1.0, 4.0);
+    _zoom = next;
+
+    // ابعت scale للنيتف
+    await c.setZoomScale(_zoom);
+  },
+
+  onDoubleTap: () async {
+    final c = _fsController;
+    if (c == null) return;
+
+    _zoom = 1.0;
+    await c.resetZoom();
+  },
+
+  child: MoussaHlsPlayerView(
+            onCreated: (fs) async {
+              _fsController = fs;
+              await _syncFromSource(fs);
+          
+              // Enable pinch-to-zoom in fullscreen (1..4 by default)
+              await fs.setMaxZoom(4.0);
+              await fs.setZoomEnabled(true);
+            },
+            showErrorOverlay: true,
+            showBufferingOverlay: true,
+            showControls: false,
+            child: (_fsController == null)
+                ? const SizedBox.shrink()
+                : MoussaMinimalControls(
+                    controller: _fsController!,
+                    onExitFullscreen: _exitFullscreen,
+                  ),
+          ),
         ),
       ),
     );

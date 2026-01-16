@@ -265,10 +265,10 @@ class MoussaHlsNativeView(
         }
 
         if (isBufferingNow) {
-          pendingSeekMs = pos
+          pendingSeekMs = pospendingSeekMs = pos.coerceAtLeast(0L)
           sendEvent("seek_queued", mapOf("positionMs" to pos, "when" to "buffering"))
         } else {
-          seekToSafely(pos, emitEvent = true)
+          seekToSafely(pos.coerceAtLeast(0L), emitEvent = true)
         }
         result.success(null)
       }
@@ -405,6 +405,16 @@ class MoussaHlsNativeView(
 
         result.success(null)
       }
+
+      "setZoomScale" -> {
+  if (!zoomEnabled) { result.success(null); return }
+  val scale = (call.argument<Number>("scale")?.toFloat() ?: 1f)
+  applyZoom(scale) // لازم تكون عندك (أو اعملها): clamp 1..maxZoom وتطبّق على playerView.scaleX/scaleY
+  sendEvent("zoom_changed", mapOf("scale" to currentZoom)) // اختياري
+  result.success(null)
+}
+
+
 
       "setVolume" -> {
         val argsMap = call.arguments as? Map<*, *>
@@ -575,6 +585,14 @@ class MoussaHlsNativeView(
       )
     }
   }
+
+  private fun applyZoom(scale: Float) {
+  val next = scale.coerceIn(1.0f, maxZoom)
+  if (next == currentZoom) return
+  currentZoom = next
+  playerView.scaleX = currentZoom
+  playerView.scaleY = currentZoom
+}
 
   private fun getPositionMs(): Long {
     val p = player.currentPosition

@@ -257,6 +257,9 @@ class MoussaHlsPlayerController {
   /// Reset zoom back to 1.0.
   Future<void> resetZoom() async => _safeInvoke<void>('resetZoom');
 
+  Future<void> setZoomScale(double scale) async =>
+    _safeInvoke<void>('setZoomScale', {'scale': scale});
+
   Future<void> setQuality(String label) async =>
       _safeInvoke<void>('setQuality', {'label': label});
 

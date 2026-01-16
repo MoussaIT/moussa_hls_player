@@ -26,12 +26,14 @@ class MoussaHlsPlayerWithControls extends StatefulWidget {
       _MoussaHlsPlayerWithControlsState();
 }
 
-class _MoussaHlsPlayerWithControlsState extends State<MoussaHlsPlayerWithControls> {
+class _MoussaHlsPlayerWithControlsState
+    extends State<MoussaHlsPlayerWithControls> {
   MoussaHlsPlayerController? _c;
   bool _showControls = true;
   Timer? _hideTimer;
   bool _isSeeking = false;
   double _seekTempMs = 0;
+  double _speed = 1.0;
 
   @override
   void dispose() {
@@ -120,7 +122,10 @@ class _MoussaHlsPlayerWithControlsState extends State<MoussaHlsPlayerWithControl
                                   gradient: LinearGradient(
                                     begin: Alignment.topCenter,
                                     end: Alignment.bottomCenter,
-                                    colors: [Colors.black54, Colors.transparent],
+                                    colors: [
+                                      Colors.black54,
+                                      Colors.transparent,
+                                    ],
                                   ),
                                 ),
                               ),
@@ -135,7 +140,10 @@ class _MoussaHlsPlayerWithControlsState extends State<MoussaHlsPlayerWithControl
                                   gradient: LinearGradient(
                                     begin: Alignment.bottomCenter,
                                     end: Alignment.topCenter,
-                                    colors: [Colors.black54, Colors.transparent],
+                                    colors: [
+                                      Colors.black54,
+                                      Colors.transparent,
+                                    ],
                                   ),
                                 ),
                               ),
@@ -143,20 +151,74 @@ class _MoussaHlsPlayerWithControlsState extends State<MoussaHlsPlayerWithControl
 
                             // center play/pause
                             Center(
-                              child: IconButton(
-                                iconSize: 64,
-                                color: Colors.white,
-                                onPressed: () async {
-                                  _kickAutoHide();
-                                  if (s.isPlaying) {
-                                    await _c!.pause();
-                                  } else {
-                                    await _c!.play();
-                                  }
-                                },
-                                icon: Icon(
-                                  s.isPlaying ? Icons.pause_circle : Icons.play_circle,
-                                ),
+                              child: Row(
+                                children: [
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 6,
+                                      vertical: 6,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: Colors.black45,
+                                      borderRadius: BorderRadius.circular(70),
+                                    ),
+                                    child: IconButton(
+                                      iconSize: 40,
+                                      onPressed: () async {
+                                        _kickAutoHide();
+                                        await _c!.seekByMs(-5000);
+                                      },
+                                      icon: const Icon(
+                                        Icons.replay_5,
+                                        color: Colors.white,
+                                      ),
+                                    ),
+                                  ),
+
+                                  SizedBox(width: 10),
+                                  IconButton(
+                                    iconSize: 64,
+                                    color: Colors.white,
+                                    onPressed: () async {
+                                      _kickAutoHide();
+                                      if (s.isPlaying) {
+                                        await _c!.pause();
+                                      } else {
+                                        await _c!.play();
+                                      }
+                                    },
+                                    icon: Icon(
+                                      s.isPlaying
+                                          ? Icons.pause_circle
+                                          : Icons.play_circle,
+                                    ),
+                                  ),
+                                  SizedBox(width: 10),
+
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 6,
+                                      vertical: 6,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: Colors.black45,
+                                      borderRadius: BorderRadius.circular(70),
+                                    ),
+                                    child: IconButton(
+                                      iconSize: 40,
+                                      padding: EdgeInsets.zero,
+                                      constraints: const BoxConstraints(),
+                                      onPressed: () async {
+                                        _kickAutoHide();
+                                        await _c!.seekByMs(5000);
+                                      },
+                                      icon: const Icon(
+                                        Icons.forward_5,
+                                        color: Colors.white,
+                                      ),
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
 
@@ -174,6 +236,58 @@ class _MoussaHlsPlayerWithControlsState extends State<MoussaHlsPlayerWithControl
                                       _kickAutoHide();
                                       await _c!.setQuality(label);
                                     },
+                                  ),
+                                  PopupMenuButton<double>(
+                                    initialValue: _speed,
+                                    color: Colors.black87,
+                                    onSelected: (v) async {
+                                      _kickAutoHide();
+                                      setState(() => _speed = v);
+                                      await _c!.setPlaybackSpeed(v);
+                                    },
+                                    itemBuilder: (_) {
+                                      const speeds = <double>[
+                                        0.5,
+                                        0.75,
+                                        1.0,
+                                        1.25,
+                                        1.5,
+                                        2.0,
+                                      ];
+                                      return speeds
+                                          .map(
+                                            (s) => PopupMenuItem<double>(
+                                              value: s,
+                                              child: Text(
+                                                '${s.toStringAsFixed(s == 1.0 ? 0 : 2)}x',
+                                                style: const TextStyle(
+                                                  color: Colors.white,
+                                                ),
+                                              ),
+                                            ),
+                                          )
+                                          .toList();
+                                    },
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 10,
+                                        vertical: 6,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: Colors.black45,
+                                        borderRadius: BorderRadius.circular(16),
+                                        border: Border.all(
+                                          color: Colors.white24,
+                                        ),
+                                      ),
+                                      child: Text(
+                                        '${_speed.toStringAsFixed(_speed == 1.0 ? 0 : 2)}x',
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                    ),
                                   ),
                                   IconButton(
                                     color: Colors.white,
@@ -206,7 +320,9 @@ class _MoussaHlsPlayerWithControlsState extends State<MoussaHlsPlayerWithControl
                                     },
                                     onChanged: (ms) {
                                       _kickAutoHide();
-                                      setState(() => _seekTempMs = ms.toDouble());
+                                      setState(
+                                        () => _seekTempMs = ms.toDouble(),
+                                      );
                                     },
                                     onChangeEnd: (ms) async {
                                       _kickAutoHide();
@@ -222,7 +338,10 @@ class _MoussaHlsPlayerWithControlsState extends State<MoussaHlsPlayerWithControl
                                       // time
                                       Text(
                                         '${_fmt(pos)} / ${_fmt(duration)}',
-                                        style: const TextStyle(color: Colors.white, fontSize: 12),
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 12,
+                                        ),
                                       ),
                                       const Spacer(),
 
@@ -235,7 +354,9 @@ class _MoussaHlsPlayerWithControlsState extends State<MoussaHlsPlayerWithControl
                                           await _c!.toggleMute();
                                         },
                                         icon: Icon(
-                                          _c!.isMuted ? Icons.volume_off : Icons.volume_up,
+                                          _c!.isMuted
+                                              ? Icons.volume_off
+                                              : Icons.volume_up,
                                           color: Colors.white,
                                         ),
                                       ),

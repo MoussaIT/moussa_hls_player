@@ -251,6 +251,19 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
       sendEvent(type: "zoom_changed", data: ["scale": 1.0])
       result(nil)
 
+    case "setZoomScale":
+      guard
+        let args = call.arguments as? [String: Any],
+        let sc = args["scale"] as? NSNumber
+      else {
+        result(FlutterError(code: "bad_args", message: "scale required", details: nil))
+        return
+      }
+      guard zoomEnabled else { result(nil); return }
+      applyZoom(scale: CGFloat(sc.doubleValue))
+      sendEvent(type: "zoom_changed", data: ["scale": Double(currentZoom)])
+      result(nil)
+
     case "setQuality":
       guard
         let args = call.arguments as? [String: Any],

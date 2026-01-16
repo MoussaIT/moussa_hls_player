@@ -76,8 +76,11 @@ class _MoussaMinimalControlsState extends State<MoussaMinimalControls> {
                   alignment: Alignment.topLeft,
                   child: SafeArea(
                     child: Container(
-                      color: Colors.black45,
-                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.black45,
+                        borderRadius: BorderRadius.circular(50),
+                      ),
+                      padding: const EdgeInsets.all(10),
                       child: IconButton(
                         onPressed: widget.onExitFullscreen,
                         icon: const Icon(Icons.close, color: Colors.white),
@@ -134,17 +137,26 @@ class _MoussaMinimalControlsState extends State<MoussaMinimalControls> {
                           Row(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              IconButton(
-                                onPressed: () async {
-                                  await widget.controller.seekByMs(-5000);
-                                  _restartAutoHide();
-                                },
-                                icon: const Icon(
-                                  Icons.replay_5,
-                                  color: Colors.white,
+                              Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 8,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: Colors.black45,
+                                    borderRadius: BorderRadius.circular(24),
+                                  ), child: IconButton(
+                                  onPressed: () async {
+                                    await widget.controller.seekByMs(-5000);
+                                    _restartAutoHide();
+                                  },
+                                  icon: const Icon(
+                                    Icons.replay_5,
+                                    color: Colors.white,
+                                  ),
                                 ),
                               ),
-
+                              SizedBox(width: 5,),
                               PopupMenuButton<double>(
                                 initialValue: _speed,
                                 color: Colors.black87,
@@ -179,11 +191,11 @@ class _MoussaMinimalControlsState extends State<MoussaMinimalControls> {
                                 child: Container(
                                   padding: const EdgeInsets.symmetric(
                                     horizontal: 10,
-                                    vertical: 6,
+                                    vertical: 8,
                                   ),
                                   decoration: BoxDecoration(
                                     color: Colors.black45,
-                                    borderRadius: BorderRadius.circular(16),
+                                    borderRadius: BorderRadius.circular(24),
                                   ),
                                   child: Text(
                                     '${_speed.toStringAsFixed(_speed == 1.0 ? 0 : 2)}x',
@@ -194,15 +206,24 @@ class _MoussaMinimalControlsState extends State<MoussaMinimalControls> {
                                   ),
                                 ),
                               ),
-
-                              IconButton(
-                                onPressed: () async {
-                                  await widget.controller.seekByMs(5000);
-                                  _restartAutoHide();
-                                },
-                                icon: const Icon(
-                                  Icons.forward_5,
-                                  color: Colors.white,
+                              SizedBox(width: 5,),
+                              Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 8,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: Colors.black45,
+                                    borderRadius: BorderRadius.circular(24),
+                                  ), child: IconButton(
+                                  onPressed: () async {
+                                    await widget.controller.seekByMs(5000);
+                                    _restartAutoHide();
+                                  },
+                                  icon: const Icon(
+                                    Icons.forward_5,
+                                    color: Colors.white,
+                                  ),
                                 ),
                               ),
                             ],
