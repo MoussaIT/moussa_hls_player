@@ -139,8 +139,8 @@ class _MoussaMinimalControlsState extends State<MoussaMinimalControls> {
                             children: [
                               Container(
                                   padding: const EdgeInsets.symmetric(
-                                    horizontal: 10,
-                                    vertical: 8,
+                                    horizontal: 6,
+                                    vertical: 6,
                                   ),
                                   decoration: BoxDecoration(
                                     color: Colors.black45,
@@ -156,7 +156,7 @@ class _MoussaMinimalControlsState extends State<MoussaMinimalControls> {
                                   ),
                                 ),
                               ),
-                              SizedBox(width: 5,),
+                              SizedBox(width: 8,),
                               PopupMenuButton<double>(
                                 initialValue: _speed,
                                 color: Colors.black87,
@@ -191,7 +191,7 @@ class _MoussaMinimalControlsState extends State<MoussaMinimalControls> {
                                 child: Container(
                                   padding: const EdgeInsets.symmetric(
                                     horizontal: 10,
-                                    vertical: 8,
+                                    vertical: 10,
                                   ),
                                   decoration: BoxDecoration(
                                     color: Colors.black45,
@@ -206,11 +206,11 @@ class _MoussaMinimalControlsState extends State<MoussaMinimalControls> {
                                   ),
                                 ),
                               ),
-                              SizedBox(width: 5,),
+                              SizedBox(width: 8,),
                               Container(
                                   padding: const EdgeInsets.symmetric(
-                                    horizontal: 10,
-                                    vertical: 8,
+                                    horizontal: 6,
+                                    vertical: 6,
                                   ),
                                   decoration: BoxDecoration(
                                     color: Colors.black45,

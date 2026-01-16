@@ -309,6 +309,7 @@ class _ControlsOverlay extends StatelessWidget {
 
     return Container(
       color: Colors.black26,
+      alignment: Alignment.center,
       child: Column(
         children: [
           // Top bar

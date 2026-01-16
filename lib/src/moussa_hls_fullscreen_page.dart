@@ -22,18 +22,15 @@ class MoussaFullscreenResult {
 
 class MoussaHlsFullscreenPage extends StatefulWidget {
   const MoussaHlsFullscreenPage({super.key, required this.sourceController});
-
   final MoussaHlsPlayerController sourceController;
 
   @override
-  State<MoussaHlsFullscreenPage> createState() =>
-      _MoussaHlsFullscreenPageState();
+  State<MoussaHlsFullscreenPage> createState() => _MoussaHlsFullscreenPageState();
 }
 
 class _MoussaHlsFullscreenPageState extends State<MoussaHlsFullscreenPage> {
   MoussaHlsPlayerController? _fsController;
 
-  // ✅ Flutter zoom controller (pinch + pan)
   final TransformationController _tx = TransformationController();
 
   @override
@@ -55,27 +52,26 @@ class _MoussaHlsFullscreenPageState extends State<MoussaHlsFullscreenPage> {
 
     final qualities = src.qualities;
     final initial =
-        (s.currentQuality != null &&
-            qualities.any((q) => q.label == s.currentQuality))
-        ? s.currentQuality!
-        : (qualities.isNotEmpty ? qualities.first.label : '');
+        (s.currentQuality != null && qualities.any((q) => q.label == s.currentQuality))
+            ? s.currentQuality!
+            : (qualities.isNotEmpty ? qualities.first.label : '');
 
-    if (qualities.isNotEmpty && initial.isNotEmpty) {
-      await fs.setSource(
-        qualities: qualities,
-        initialQuality: initial,
-        autoPlay: s.isPlaying,
-      );
+    if (qualities.isEmpty || initial.isEmpty) return;
 
-      await fs.setVolume(s.volume);
+    await fs.setSource(
+      qualities: qualities,
+      initialQuality: initial,
+      autoPlay: s.isPlaying,
+    );
 
-      if (s.positionMs > 0) {
-        await fs.seekToMs(s.positionMs);
-      }
+    await fs.setVolume(s.volume);
 
-      if (s.isPlaying) {
-        await fs.play();
-      }
+    if (s.positionMs > 0) {
+      await fs.seekToMs(s.positionMs);
+    }
+
+    if (s.isPlaying) {
+      await fs.play();
     }
   }
 
@@ -102,21 +98,20 @@ class _MoussaHlsFullscreenPageState extends State<MoussaHlsFullscreenPage> {
     Navigator.of(context).pop(_currentResult());
   }
 
-  // ✅ double tap: toggle 1x <-> 2x (تقدر تخليها 3x لو عايز)
   void _onDoubleTap() {
-    final m = _tx.value;
-    final currentScale = m.getMaxScaleOnAxis();
-
+    final currentScale = _tx.value.getMaxScaleOnAxis();
     if (currentScale > 1.01) {
       _tx.value = Matrix4.identity();
     } else {
-      // zoom in to 2x around center
       _tx.value = Matrix4.identity()..scale(2.0);
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final size = MediaQuery.of(context).size;
+    final ratio = (size.height <= 0) ? (16 / 9) : (size.width / size.height);
+
     return WillPopScope(
       onWillPop: () async {
         _exitFullscreen();
@@ -127,7 +122,6 @@ class _MoussaHlsFullscreenPageState extends State<MoussaHlsFullscreenPage> {
         body: Stack(
           fit: StackFit.expand,
           children: [
-            // ✅ Flutter Zoom: pinch + pan
             GestureDetector(
               behavior: HitTestBehavior.opaque,
               onDoubleTap: _onDoubleTap,
@@ -135,41 +129,35 @@ class _MoussaHlsFullscreenPageState extends State<MoussaHlsFullscreenPage> {
                 transformationController: _tx,
                 minScale: 1.0,
                 maxScale: 4.0,
-                // ✅ يسمح إنه يطلع برا الإطار عادي
                 constrained: false,
-                // ✅ pan بحرية (بدون حدود)
-                boundaryMargin: const EdgeInsets.all(double.infinity),
+                // ✅ بدل infinity: رقم كبير آمن
+                boundaryMargin: const EdgeInsets.all(3000),
+
                 child: Center(
-                  child: LayoutBuilder(
-                    builder: (context, cts) {
-                      final w = cts.maxWidth;
-                      final h = cts.maxHeight;
-
-                      // حماية من القيم الغريبة
-                      final ratio = (h <= 0) ? (16 / 9) : (w / h);
-
-                      return Center(
-                        child: AspectRatio(
-                          aspectRatio: ratio,
-                          child: MoussaHlsPlayerView(
-                            onCreated: (fs) async {
-                              _fsController = fs;
-                              await _syncFromSource(fs);
-                            },
-                            showErrorOverlay: true,
-                            showBufferingOverlay: true,
-                            showControls: false,
-                            child: const SizedBox.shrink(),
-                          ),
+                  child: SizedBox(
+                    width: size.width,
+                    height: size.height,
+                    child: Center(
+                      child: AspectRatio(
+                        aspectRatio: ratio,
+                        child: MoussaHlsPlayerView(
+                          onCreated: (fs) async {
+                            _fsController = fs;
+                            if (mounted) setState(() {}); // ✅ عشان الـ controls تظهر
+                            await _syncFromSource(fs);
+                          },
+                          showErrorOverlay: true,
+                          showBufferingOverlay: true,
+                          showControls: false,
+                          child: const SizedBox.shrink(),
                         ),
-                      );
-                    },
+                      ),
+                    ),
                   ),
                 ),
               ),
             ),
 
-            // ✅ Controls overlay فوق الفيديو (مبتتأثرش بالـ pinch)
             if (_fsController != null)
               MoussaMinimalControls(
                 controller: _fsController!,

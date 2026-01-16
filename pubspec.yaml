@@ -1,6 +1,6 @@
 name: moussa_hls_player
 description: "Native HLS video player for Flutter (Android & iOS only)"
-version: 0.1.3+6
+version: 0.1.3+7
 homepage: https://github.com/moussait/moussa_hls_player
 
 environment:
