@@ -19,6 +19,9 @@ class MoussaMinimalControls extends StatefulWidget {
 class _MoussaMinimalControlsState extends State<MoussaMinimalControls> {
   bool _visible = true;
   Timer? _hideTimer;
+  double _speed = 1.0;
+  bool _isScrubbing = false;
+  double? _scrubValue; // 0..1
 
   @override
   void dispose() {
@@ -72,8 +75,9 @@ class _MoussaMinimalControlsState extends State<MoussaMinimalControls> {
                 child: Align(
                   alignment: Alignment.topLeft,
                   child: SafeArea(
-                    child: Padding(
-                      padding: const EdgeInsets.all(10),
+                    child: Container(
+                      color: Colors.black45,
+                      padding: const EdgeInsets.all(12),
                       child: IconButton(
                         onPressed: widget.onExitFullscreen,
                         icon: const Icon(Icons.close, color: Colors.white),
@@ -126,6 +130,84 @@ class _MoussaMinimalControlsState extends State<MoussaMinimalControls> {
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
+                          // Quick actions: -5s, speed, +5s
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              IconButton(
+                                onPressed: () async {
+                                  await widget.controller.seekByMs(-5000);
+                                  _restartAutoHide();
+                                },
+                                icon: const Icon(
+                                  Icons.replay_5,
+                                  color: Colors.white,
+                                ),
+                              ),
+
+                              PopupMenuButton<double>(
+                                initialValue: _speed,
+                                color: Colors.black87,
+                                onSelected: (v) async {
+                                  setState(() => _speed = v);
+                                  await widget.controller.setPlaybackSpeed(v);
+                                  _restartAutoHide();
+                                },
+                                itemBuilder: (_) {
+                                  const speeds = <double>[
+                                    0.5,
+                                    0.75,
+                                    1.0,
+                                    1.25,
+                                    1.5,
+                                    2.0,
+                                  ];
+                                  return speeds
+                                      .map(
+                                        (s) => PopupMenuItem<double>(
+                                          value: s,
+                                          child: Text(
+                                            '${s.toStringAsFixed(s == 1.0 ? 0 : 2)}x',
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                            ),
+                                          ),
+                                        ),
+                                      )
+                                      .toList();
+                                },
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 6,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: Colors.black45,
+                                    borderRadius: BorderRadius.circular(16),
+                                  ),
+                                  child: Text(
+                                    '${_speed.toStringAsFixed(_speed == 1.0 ? 0 : 2)}x',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                ),
+                              ),
+
+                              IconButton(
+                                onPressed: () async {
+                                  await widget.controller.seekByMs(5000);
+                                  _restartAutoHide();
+                                },
+                                icon: const Icon(
+                                  Icons.forward_5,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            ],
+                          ),
+
                           // Buffered bar (خلفية)
                           ClipRRect(
                             borderRadius: BorderRadius.circular(4),
@@ -136,25 +218,64 @@ class _MoussaMinimalControlsState extends State<MoussaMinimalControls> {
 
                                 // Buffered
                                 FractionallySizedBox(
-                                  widthFactor: bufferedValue.isNaN ? 0 : bufferedValue,
-                                  child: Container(height: 4, color: Colors.white38),
+                                  widthFactor: bufferedValue.isNaN
+                                      ? 0
+                                      : bufferedValue,
+                                  child: Container(
+                                    height: 4,
+                                    color: Colors.white38,
+                                  ),
                                 ),
 
                                 // Slider فوقها
                                 SliderTheme(
                                   data: SliderTheme.of(context).copyWith(
                                     trackHeight: 4,
-                                    thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-                                    overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
+                                    thumbShape: const RoundSliderThumbShape(
+                                      enabledThumbRadius: 6,
+                                    ),
+                                    overlayShape: const RoundSliderOverlayShape(
+                                      overlayRadius: 12,
+                                    ),
                                   ),
                                   child: Slider(
-                                    value: positionValue.isNaN ? 0 : positionValue,
-                                    onChangeStart: (_) => _hideTimer?.cancel(),
-                                    onChanged: (v) async {
+                                    value:
+                                        (_isScrubbing
+                                                ? (_scrubValue ?? positionValue)
+                                                : positionValue)
+                                            .isNaN
+                                        ? 0
+                                        : (_isScrubbing
+                                              ? (_scrubValue ?? positionValue)
+                                              : positionValue),
+
+                                    onChangeStart: (_) {
+                                      _hideTimer?.cancel();
+                                      setState(() {
+                                        _isScrubbing = true;
+                                        _scrubValue = positionValue;
+                                      });
+                                    },
+
+                                    // أثناء السحب: UI بس (من غير seek)
+                                    onChanged: (v) {
+                                      setState(() => _scrubValue = v);
+                                    },
+
+                                    // عند رفع الصباع: seek مرة واحدة
+                                    onChangeEnd: (v) async {
                                       final newPos = (v * dur).round();
                                       await widget.controller.seekToMs(newPos);
+
+                                      if (mounted) {
+                                        setState(() {
+                                          _isScrubbing = false;
+                                          _scrubValue = null;
+                                        });
+                                      }
+
+                                      _restartAutoHide();
                                     },
-                                    onChangeEnd: (_) => _restartAutoHide(),
                                   ),
                                 ),
                               ],
@@ -166,8 +287,20 @@ class _MoussaMinimalControlsState extends State<MoussaMinimalControls> {
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
-                              Text(_fmt(pos), style: const TextStyle(color: Colors.white, fontSize: 12)),
-                              Text(_fmt(dur), style: const TextStyle(color: Colors.white, fontSize: 12)),
+                              Text(
+                                _fmt(pos),
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 12,
+                                ),
+                              ),
+                              Text(
+                                _fmt(dur),
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 12,
+                                ),
+                              ),
                             ],
                           ),
                         ],

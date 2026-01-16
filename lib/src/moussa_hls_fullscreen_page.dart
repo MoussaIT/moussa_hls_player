@@ -99,6 +99,13 @@ class _MoussaHlsFullscreenPageState extends State<MoussaHlsFullscreenPage> {
   }
 
   void _exitFullscreen() {
+    // Disable zoom when leaving fullscreen to avoid gesture conflicts inline.
+    final c = _fsController;
+    if (c != null) {
+      // Best-effort; ignore failures.
+      c.setZoomEnabled(false);
+      c.resetZoom();
+    }
     Navigator.of(context).pop(_currentResult());
   }
 
@@ -115,6 +122,10 @@ class _MoussaHlsFullscreenPageState extends State<MoussaHlsFullscreenPage> {
           onCreated: (fs) async {
             _fsController = fs;
             await _syncFromSource(fs);
+
+            // Enable pinch-to-zoom in fullscreen (1..4 by default)
+            await fs.setMaxZoom(4.0);
+            await fs.setZoomEnabled(true);
           },
           showErrorOverlay: true,
           showBufferingOverlay: true,

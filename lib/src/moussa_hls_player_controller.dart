@@ -234,6 +234,29 @@ class MoussaHlsPlayerController {
   Future<void> seekToMs(int positionMs) async =>
       _safeInvoke<void>('seekTo', {'positionMs': positionMs});
 
+  /// Seek relative to current position (delta in milliseconds).
+  /// Example: -5000 for back 5s, +5000 for forward 5s.
+  Future<void> seekByMs(int deltaMs) async =>
+      _safeInvoke<void>('seekBy', {'deltaMs': deltaMs});
+
+  /// Set playback speed (e.g. 0.5, 1.0, 1.25, 1.5, 2.0).
+  /// Native clamps to a safe range.
+  Future<void> setPlaybackSpeed(double speed) async =>
+      _safeInvoke<void>('setPlaybackSpeed', {'speed': speed});
+
+  /// Enable/disable pinch-to-zoom (typically enable in fullscreen only).
+  Future<void> setZoomEnabled(bool enabled) async =>
+      // Native method name is `enableZoom`.
+      _safeInvoke<void>('enableZoom', {'enabled': enabled});
+
+  /// Set maximum zoom factor (default is 4.0 on native).
+  Future<void> setMaxZoom(double maxZoom) async =>
+      // Native expects key `max`.
+      _safeInvoke<void>('setMaxZoom', {'max': maxZoom});
+
+  /// Reset zoom back to 1.0.
+  Future<void> resetZoom() async => _safeInvoke<void>('resetZoom');
+
   Future<void> setQuality(String label) async =>
       _safeInvoke<void>('setQuality', {'label': label});
 
