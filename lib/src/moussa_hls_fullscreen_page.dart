@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'moussa_fullscreen.dart';
 import 'moussa_hls_player_controller.dart';
@@ -37,6 +39,8 @@ class _MoussaHlsFullscreenPageState extends State<MoussaHlsFullscreenPage> {
 
   double _zoom = 1.0;
   double _zoomBase = 1.0;
+  Timer? _zoomThrottle;
+  double _pendingZoom = 1.0;
   
   @override
   void initState() {
@@ -47,6 +51,7 @@ class _MoussaHlsFullscreenPageState extends State<MoussaHlsFullscreenPage> {
   @override
   void dispose() {
     MoussaFullscreen.exit();
+    _zoomThrottle?.cancel();
     super.dispose();
   }
 
@@ -128,25 +133,29 @@ class _MoussaHlsFullscreenPageState extends State<MoussaHlsFullscreenPage> {
     _zoomBase = _zoom;
   },
 
-  onScaleUpdate: (d) async {
-    final c = _fsController;
-    if (c == null) return;
+  onScaleUpdate: (d) {
+  final c = _fsController;
+  if (c == null) return;
 
-    // scale بتطلع relative للgesture الحالي
-    final next = (_zoomBase * d.scale).clamp(1.0, 4.0);
-    _zoom = next;
+  _pendingZoom = (_zoomBase * d.scale).clamp(1.0, 4.0);
+  _zoom = _pendingZoom;
 
-    // ابعت scale للنيتف
-    await c.setZoomScale(_zoom);
-  },
+  // throttle: ابعت كل 50ms بس
+  if (_zoomThrottle?.isActive ?? false) return;
+  _zoomThrottle = Timer(const Duration(milliseconds: 50), () {
+    final cc = _fsController;
+    if (cc == null) return;
+    cc.setZoomScale(_pendingZoom); // ✅ بدون await
+  });
+},
 
-  onDoubleTap: () async {
-    final c = _fsController;
-    if (c == null) return;
-
-    _zoom = 1.0;
-    await c.resetZoom();
-  },
+  onDoubleTap: () {
+  final c = _fsController;
+  if (c == null) return;
+  _zoom = 1.0;
+  _pendingZoom = 1.0;
+  c.resetZoom(); // بدون await
+},
 
   child: MoussaHlsPlayerView(
             onCreated: (fs) async {

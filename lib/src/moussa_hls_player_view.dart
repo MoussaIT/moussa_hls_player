@@ -47,19 +47,21 @@ class _MoussaHlsPlayerViewState extends State<MoussaHlsPlayerView> {
 
   bool _isFullscreen = false;
 
+  double _speed = 1.0;
+
   @override
-void dispose() {
-  _hideTimer?.cancel();
+  void dispose() {
+    _hideTimer?.cancel();
 
-  final c = _controller;
-  if (c != null) {
-    c.pause(); // ✅ وقف التشغيل
-    // لو عندك stop() استخدمها بدل pause
+    final c = _controller;
+    if (c != null) {
+      c.pause(); // ✅ وقف التشغيل
+      // لو عندك stop() استخدمها بدل pause
+    }
+
+    _controller?.dispose();
+    super.dispose();
   }
-
-  _controller?.dispose();
-  super.dispose();
-}
 
   void _onPlatformCreated(int id) async {
     final c = MoussaHlsPlayerController.fromViewId(id);
@@ -185,16 +187,16 @@ void dispose() {
       fit: StackFit.expand,
       children: [
         platformView,
-    
+
         Positioned.fill(
           child: GestureDetector(
             behavior: HitTestBehavior.translucent,
             onTap: _toggleControls,
           ),
         ),
-    
+
         if (widget.child != null) widget.child!,
-    
+
         // ✅ Buffering overlay
         if (c != null && widget.showBufferingOverlay)
           ValueListenableBuilder(
@@ -217,7 +219,7 @@ void dispose() {
               );
             },
           ),
-    
+
         // ✅ Controls overlay
         if (c != null && widget.showControls)
           ValueListenableBuilder(
@@ -231,6 +233,11 @@ void dispose() {
                   child: _ControlsOverlay(
                     controller: c,
                     state: s,
+                    speed: _speed,
+                    onSpeedChanged: (v) {
+                      if (!mounted) return;
+                      setState(() => _speed = v);
+                    },
                     onInteracted: _kickAutoHide,
                     onToggleFullscreen: _toggleFullscreen,
                     isFullscreen: _isFullscreen,
@@ -261,10 +268,15 @@ class _ControlsOverlay extends StatelessWidget {
   const _ControlsOverlay({
     required this.controller,
     required this.state,
+    required this.speed,
+    required this.onSpeedChanged,
     required this.onInteracted,
     required this.onToggleFullscreen,
     required this.isFullscreen,
   });
+
+  final double speed;
+  final ValueChanged<double> onSpeedChanged;
 
   final MoussaHlsPlayerController controller;
   final MoussaPlaybackState state;
@@ -278,8 +290,9 @@ class _ControlsOverlay extends StatelessWidget {
     final h = s ~/ 3600;
     final m = (s % 3600) ~/ 60;
     final sec = s % 60;
-    if (h > 0)
+    if (h > 0) {
       return '${h.toString().padLeft(2, '0')}:${m.toString().padLeft(2, '0')}:${sec.toString().padLeft(2, '0')}';
+    }
     return '${m.toString().padLeft(2, '0')}:${sec.toString().padLeft(2, '0')}';
   }
 
@@ -310,6 +323,48 @@ class _ControlsOverlay extends StatelessWidget {
                     controller: controller,
                     onInteracted: onInteracted,
                   ),
+                  PopupMenuButton<double>(
+                    tooltip: 'Speed',
+                    color: Colors.black87,
+                    onOpened: onInteracted,
+                    onSelected: (v) async {
+                      onInteracted();
+                      onSpeedChanged(v); // ✅ تحديث النص فوراً
+                      await controller.setPlaybackSpeed(v);
+                    },
+                    itemBuilder: (_) {
+                      const speeds = <double>[0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
+                      return speeds
+                          .map(
+                            (s) => PopupMenuItem<double>(
+                              value: s,
+                              child: Text(
+                                '${s.toStringAsFixed(s == 1.0 ? 0 : 2)}x',
+                                style: const TextStyle(color: Colors.white),
+                              ),
+                            ),
+                          )
+                          .toList();
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.black54,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        '${speed.toStringAsFixed(speed == 1.0 ? 0 : 2)}x', // ✅ يعرض القيمة
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                  ),
+
                   const Spacer(),
                   IconButton(
                     onPressed: () {
@@ -339,30 +394,98 @@ class _ControlsOverlay extends StatelessWidget {
           const Spacer(),
 
           // Center play/pause
+          // Center(
+          //   child: InkWell(
+          //     onTap: () async {
+          //       onInteracted();
+          //       if (state.isPlaying) {
+          //         await controller.pause();
+          //       } else {
+          //         await controller.play();
+          //       }
+          //     },
+          //     borderRadius: BorderRadius.circular(48),
+          //     child: Container(
+          //       width: 72,
+          //       height: 72,
+          //       decoration: BoxDecoration(
+          //         color: Colors.black54,
+          //         borderRadius: BorderRadius.circular(48),
+          //       ),
+          //       child: Icon(
+          //         state.isPlaying ? Icons.pause : Icons.play_arrow,
+          //         color: Colors.white,
+          //         size: 44,
+          //       ),
+          //     ),
+          //   ),
+          // ),
           Center(
-            child: InkWell(
-              onTap: () async {
-                onInteracted();
-                if (state.isPlaying) {
-                  await controller.pause();
-                } else {
-                  await controller.play();
-                }
-              },
-              borderRadius: BorderRadius.circular(48),
-              child: Container(
-                width: 72,
-                height: 72,
-                decoration: BoxDecoration(
-                  color: Colors.black54,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                // ⏪ -5s
+                Container(
+                  decoration: BoxDecoration(
+                    color: Colors.black54,
+                    borderRadius: BorderRadius.circular(40),
+                  ),
+                  child: IconButton(
+                    iconSize: 34,
+                    onPressed: () async {
+                      onInteracted();
+                      await controller.seekByMs(-5000);
+                    },
+                    icon: const Icon(Icons.replay_5, color: Colors.white),
+                  ),
+                ),
+
+                const SizedBox(width: 14),
+
+                // ▶️ / ⏸
+                InkWell(
+                  onTap: () async {
+                    onInteracted();
+                    if (state.isPlaying) {
+                      await controller.pause();
+                    } else {
+                      await controller.play();
+                    }
+                  },
                   borderRadius: BorderRadius.circular(48),
+                  child: Container(
+                    width: 72,
+                    height: 72,
+                    decoration: BoxDecoration(
+                      color: Colors.black54,
+                      borderRadius: BorderRadius.circular(48),
+                    ),
+                    child: Icon(
+                      state.isPlaying ? Icons.pause : Icons.play_arrow,
+                      color: Colors.white,
+                      size: 44,
+                    ),
+                  ),
                 ),
-                child: Icon(
-                  state.isPlaying ? Icons.pause : Icons.play_arrow,
-                  color: Colors.white,
-                  size: 44,
+
+                const SizedBox(width: 14),
+
+                // ⏩ +5s
+                Container(
+                  decoration: BoxDecoration(
+                    color: Colors.black54,
+                    borderRadius: BorderRadius.circular(40),
+                  ),
+                  child: IconButton(
+                    iconSize: 34,
+                    onPressed: () async {
+                      onInteracted();
+                      await controller.seekByMs(5000);
+                    },
+                    icon: const Icon(Icons.forward_5, color: Colors.white),
+                  ),
                 ),
-              ),
+              ],
             ),
           ),
 
@@ -429,7 +552,7 @@ class _ControlsOverlay extends StatelessWidget {
                           color: Colors.white,
                           fontSize: 12,
                         ),
-                      ),                      
+                      ),
                     ],
                   ),
                 ],
