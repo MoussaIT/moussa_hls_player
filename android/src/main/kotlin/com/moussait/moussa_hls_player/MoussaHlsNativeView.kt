@@ -56,6 +56,14 @@ class MoussaHlsNativeView(
   // Safety guards + extras
   // =========================
   private var isBufferingNow: Boolean = false
+  private var bufferingStartMs: Long = 0L
+  private var lastProgressAtMs: Long = 0L
+  private var lastProgressPosMs: Long = -1L
+  private var lastProgressBufferedMs: Long = -1L
+
+  private var bufferingTimeoutMs: Long = 10000L
+  private var retryCount: Int = 0
+  private var maxRetries: Int = 8
   private var pendingSeekMs: Long? = null
 
   // Playback speed
@@ -140,11 +148,16 @@ class MoussaHlsNativeView(
         when (playbackState) {
           Player.STATE_BUFFERING -> {
             isBufferingNow = true
+            bufferingStartMs = System.currentTimeMillis()
+            lastProgressAtMs = bufferingStartMs
+            lastProgressPosMs = getPositionMs()
+            lastProgressBufferedMs = player.bufferedPosition.coerceAtLeast(0L)
             sendEvent("buffering", mapOf("reason" to "state_buffering"))
           }
 
           Player.STATE_READY -> {
             isBufferingNow = false
+            retryCount = 0
             sendEvent("ready", mapOf("durationMs" to getDurationMs()))
             sendDurationIfChanged()
 
@@ -265,7 +278,7 @@ class MoussaHlsNativeView(
         }
 
         if (isBufferingNow) {
-          pendingSeekMs = pospendingSeekMs = pos.coerceAtLeast(0L)
+          pendingSeekMs = pos.coerceAtLeast(0L)
           sendEvent("seek_queued", mapOf("positionMs" to pos, "when" to "buffering"))
         } else {
           seekToSafely(pos.coerceAtLeast(0L), emitEvent = true)
@@ -511,34 +524,75 @@ class MoussaHlsNativeView(
   }
 
   private fun startPositionTickerIfNeeded() {
-    if (eventSink == null) return
-    if (positionRunnable != null) return
+  if (eventSink == null) return
+  if (positionRunnable != null) return
 
-    val runnable = object : Runnable {
-      override fun run() {
-        if (eventSink == null) {
-          stopPositionTicker()
+  val runnable = object : Runnable {
+    override fun run() {
+      if (eventSink == null) {
+        stopPositionTicker()
+        return
+      }
+
+      // 1) duration event (rare)
+      sendDurationIfChanged()
+
+      // 2) position + buffer events (every tick)
+      val pos = getPositionMs()
+      if (pos != lastSentPositionMs) {
+        lastSentPositionMs = pos
+        sendEvent("position", mapOf("positionMs" to pos))
+      }
+
+      val buffered = player.bufferedPosition.coerceAtLeast(0L)
+      sendEvent("buffer_update", mapOf("bufferedToMs" to buffered))
+
+      // 3) watchdog progress tracking
+      val now = System.currentTimeMillis()
+
+      // لو في تقدم (pos أو buffer اتحرك) => اعتبره progress
+      if (pos != lastProgressPosMs || buffered != lastProgressBufferedMs) {
+        lastProgressPosMs = pos
+        lastProgressBufferedMs = buffered
+        lastProgressAtMs = now
+      }
+
+      // 4) buffering stuck => retry
+      if (isBufferingNow && retryCount < maxRetries) {
+        val stuckFor = now - lastProgressAtMs
+        if (stuckFor >= bufferingTimeoutMs) {
+          retryCount++
+          sendEvent(
+            "buffering_timeout",
+            mapOf("attempt" to retryCount, "stuckForMs" to stuckFor)
+          )
+
+          val url = currentQuality?.let { qualityUrls[it] }
+          val resumePos = pos.coerceAtLeast(0L) // استخدم pos الحالي
+          val shouldPlay = player.playWhenReady
+
+          if (!url.isNullOrEmpty()) {
+            setMediaUrl(url, seekMs = resumePos, playWhenReady = shouldPlay)
+          }
+
+          // reset window بعد المحاولة
+          lastProgressAtMs = now
+
+          // schedule next tick and exit early (عشان setMediaUrl عمل prepare)
+          mainHandler.postDelayed(this, 500L)
           return
         }
-
-        sendDurationIfChanged()
-
-        val pos = getPositionMs()
-        if (pos != lastSentPositionMs) {
-          lastSentPositionMs = pos
-          sendEvent("position", mapOf("positionMs" to pos))
-        }
-
-        val buffered = player.bufferedPosition.coerceAtLeast(0L)
-        sendEvent("buffer_update", mapOf("bufferedToMs" to buffered))
-
-        mainHandler.postDelayed(this, 500L)
       }
-    }
 
-    positionRunnable = runnable
-    mainHandler.postDelayed(runnable, 200L)
+      // 5) next tick
+      mainHandler.postDelayed(this, 500L)
+    }
   }
+
+  positionRunnable = runnable
+  mainHandler.postDelayed(runnable, 200L)
+}
+
 
   private fun stopPositionTicker() {
     val r = positionRunnable ?: return

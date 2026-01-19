@@ -44,6 +44,16 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
   private var endObserver: NSObjectProtocol?
 
   private var positionTimer: DispatchSourceTimer?
+  private var bufferingStartMs: Int64 = 0
+  private var lastProgressAtMs: Int64 = 0
+  private var lastProgressPosMs: Int64 = -1
+
+  private var bufferingTimeoutMs: Int64 = 10000
+  private var retryCount: Int = 0
+  private var maxRetries: Int = 8
+
+  private var lastUrlString: String? = nil
+  private var watchdogTimer: DispatchSourceTimer?
   private var lastSentPositionMs: Int64 = -1
   private var lastSentDurationMs: Int64 = -1
 
@@ -378,6 +388,7 @@ final class MoussaHlsNativeView: NSObject, FlutterPlatformView, FlutterStreamHan
   }
 
 private func setMediaUrl(_ urlString: String, seekMs: Int, play: Bool) {
+  lastUrlString = urlString
   guard let url = URL(string: urlString) else {
     sendError(code: 2990, message: "Invalid URL", details: ["url": urlString])
     return
@@ -494,12 +505,16 @@ private func setMediaUrl(_ urlString: String, seekMs: Int, play: Bool) {
         switch player.timeControlStatus {
         case .waitingToPlayAtSpecifiedRate:
           self.sendEvent(type: "buffering", data: ["reason": "waitingToPlay"])
+          self.startBufferingWatchdogIfNeeded()
         case .playing:
           self.sendEvent(type: "playing", data: ["by": "state"])
           self.applyPendingSeekIfPossible()
+          retryCount = 0
+          self.stopBufferingWatchdog()
         case .paused:
           self.sendEvent(type: "paused", data: ["by": "state"])
           self.applyPendingSeekIfPossible()
+          self.stopBufferingWatchdog()
         @unknown default:
           break
         }
@@ -692,6 +707,60 @@ private func setMediaUrl(_ urlString: String, seekMs: Int, play: Bool) {
       return player.rate != 0
     }
   }
+
+  private func startBufferingWatchdogIfNeeded() {
+  guard watchdogTimer == nil else { return }
+  let now = Int64(Date().timeIntervalSince1970 * 1000.0)
+  bufferingStartMs = now
+  lastProgressAtMs = now
+  lastProgressPosMs = getPositionMs()
+
+  let t = DispatchSource.makeTimerSource(queue: DispatchQueue.main)
+  t.schedule(deadline: .now() + .seconds(1), repeating: .seconds(1))
+  t.setEventHandler { [weak self] in
+    guard let self = self else { return }
+    guard self.isBufferingNow() else { return }
+
+    let pos = self.getPositionMs()
+    let now = Int64(Date().timeIntervalSince1970 * 1000.0)
+    if pos != self.lastProgressPosMs {
+      self.lastProgressPosMs = pos
+      self.lastProgressAtMs = now
+    }
+
+    let stuckFor = now - self.lastProgressAtMs
+    if stuckFor >= self.bufferingTimeoutMs, self.retryCount < self.maxRetries {
+      self.retryCount += 1
+      self.sendEvent(type: "buffering_timeout", data: ["attempt": self.retryCount, "stuckForMs": stuckFor])
+      self.retryIos(resumePosMs: pos)
+      self.lastProgressAtMs = now
+    }
+  }
+  t.resume()
+  watchdogTimer = t
+}
+
+  private func stopBufferingWatchdog() {
+    watchdogTimer?.cancel()
+    watchdogTimer = nil
+  }
+
+  private func retryIos(resumePosMs: Int64) {
+    guard let urlString = lastUrlString, let url = URL(string: urlString) else { return }
+    let wasPlaying = isPlaying()
+    let item = AVPlayerItem(url: url)
+    attachItemObservers(item: item)
+    player.replaceCurrentItem(with: item)
+
+    let sec = Double(resumePosMs) / 1000.0
+    player.seek(to: CMTime(seconds: sec, preferredTimescale: 600))
+
+    if wasPlaying {
+      player.play()
+      player.rate = desiredRate
+    }
+  }
+
 
   private func disposeNative() {
     channel.setMethodCallHandler(nil)

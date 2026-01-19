@@ -29,16 +29,19 @@ class MoussaHlsPlayerController {
 
   final ValueNotifier<MoussaPlaybackState> state =
       ValueNotifier<MoussaPlaybackState>(
-    const MoussaPlaybackState(
-      isPlaying: false,
-      isBuffering: false,
-      positionMs: 0,
-      durationMs: 0,
-      bufferedToMs: 0,
-      volume: 1.0,
-      currentQuality: null,
-    ),
-  );
+        const MoussaPlaybackState(
+          isPlaying: false,
+          isBuffering: false,
+          positionMs: 0,
+          durationMs: 0,
+          bufferedToMs: 0,
+          volume: 1.0,
+          currentQuality: null,
+        ),
+      );
+
+  /// 0..100
+  final ValueNotifier<double> watchedPercent = ValueNotifier<double>(0.0);
 
   final ValueNotifier<MoussaPlayerError?> error = ValueNotifier(null);
 
@@ -109,7 +112,8 @@ class MoussaHlsPlayerController {
 
     // We accept both "quality" & "label" & "currentQuality"
     if (e.containsKey('quality')) quality = (e['quality'] ?? '').toString();
-    if (e.containsKey('currentQuality')) quality = (e['currentQuality'] ?? '').toString();
+    if (e.containsKey('currentQuality'))
+      quality = (e['currentQuality'] ?? '').toString();
     if (e.containsKey('label')) quality = (e['label'] ?? '').toString();
 
     switch (type) {
@@ -170,6 +174,9 @@ class MoussaHlsPlayerController {
       // track last non-zero vol
       if (next.volume > 0.0001) _lastNonZeroVolume = next.volume;
       state.value = next;
+
+      final d = next.durationMs;
+      watchedPercent.value = (d <= 0) ? 0.0 : (next.positionMs / d) * 100.0;
     }
   }
 
@@ -319,6 +326,10 @@ class MoussaHlsPlayerController {
       volume: results[3] as double,
       currentQuality: results[4] as String?,
     );
+
+    final s = state.value;
+    final d = s.durationMs;
+    watchedPercent.value = (d <= 0) ? 0.0 : (s.positionMs / d) * 100.0;
   }
 
   Future<void> dispose() async {
@@ -340,6 +351,10 @@ class MoussaHlsPlayerController {
 
     try {
       error.dispose();
+    } catch (_) {}
+
+    try {
+      watchedPercent.dispose();
     } catch (_) {}
   }
 }
